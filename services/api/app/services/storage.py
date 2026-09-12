@@ -32,3 +32,11 @@ class Storage:
             raise ValueError("Некорректный путь документа")
         if target.exists():
             shutil.rmtree(target)
+
+    def remove_report(self, report_id: str) -> None:
+        target = (self.root / "artifacts" / report_id).resolve()
+        expected = (self.root / "artifacts").resolve()
+        if target.parent != expected:
+            raise ValueError("Некорректный путь отчета")
+        if target.exists():
+            shutil.rmtree(target)

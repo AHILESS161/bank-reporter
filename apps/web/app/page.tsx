@@ -32,6 +32,7 @@ const tabs: { id: Tab; label: string; symbol: string }[] = [
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -137,6 +138,7 @@ export default function Home() {
   const [previewReport, setPreviewReport] = useState<ReportItem>();
   const [previewDocument, setPreviewDocument] = useState<DocumentItem>();
   const [analysisDocumentId, setAnalysisDocumentId] = useState<string>();
+  const [deletingId, setDeletingId] = useState<string>();
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
 
@@ -214,6 +216,28 @@ export default function Home() {
     finally { setAnalysisDocumentId(undefined); }
   };
 
+  const deleteReportItem = async (item: ReportItem) => {
+    if (!window.confirm(`Удалить аналитический отчет «${item.title}» и все его выгрузки?`)) return;
+    setDeletingId(item.id); setError("");
+    try {
+      await api<void>(`/api/reports/${item.id}`, { method: "DELETE" });
+      if (previewReport?.id === item.id) setPreviewReport(undefined);
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось удалить отчет"); }
+    finally { setDeletingId(undefined); }
+  };
+
+  const deleteDocumentItem = async (item: DocumentItem) => {
+    if (!window.confirm(`Удалить оригинал «${item.title}» и все извлеченные из него факты?`)) return;
+    setDeletingId(item.id); setError("");
+    try {
+      await api<void>(`/api/documents/${item.id}`, { method: "DELETE" });
+      if (previewDocument?.id === item.id) setPreviewDocument(undefined);
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось удалить документ"); }
+    finally { setDeletingId(undefined); }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const text = prompt.trim();
@@ -286,12 +310,12 @@ export default function Home() {
 
         {tab === "calendar" && <Panel title="Календарь банковских событий" action={<a href="/api/calendar.ics">Экспортировать ICS</a>}><CalendarMonth events={calendar} /></Panel>}
 
-        {tab === "library" && <Panel title="Оригиналы и извлеченные данные"><Upload onDone={refresh} /><div className="table">{documents.length ? documents.map((item) => <div className="row" key={item.id}><div className="file-icon">{item.document_type.slice(0, 3).toUpperCase()}</div><div><b>{item.title}</b><small>{new Date(item.created_at).toLocaleString("ru-RU")}</small></div><Status value={item.status} /><a href={`/api/documents/${item.id}/download`}>Скачать</a></div>) : <Empty text="Загрузите PDF/XLSX/CSV или попросите агента найти отчет." />}</div></Panel>}
+        {tab === "library" && <Panel title="Оригиналы и извлеченные данные"><Upload onDone={refresh} /><div className="table">{documents.length ? documents.map((item) => <div className="row" key={item.id}><div className="file-icon">{item.document_type.slice(0, 3).toUpperCase()}</div><div><b>{item.title}</b><small>{new Date(item.created_at).toLocaleString("ru-RU")}</small></div><Status value={item.status} /><div className="row-actions"><a href={`/api/documents/${item.id}/download`}>Скачать</a><button className="delete-link" disabled={deletingId === item.id} onClick={() => void deleteDocumentItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div></div>) : <Empty text="Загрузите PDF/XLSX/CSV или попросите агента найти отчет." />}</div></Panel>}
 
         {tab === "reports" && <Panel title="Отчеты">
           {error && <div className="error">{error}</div>}
-          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">ОРИГИНАЛЫ</p><h3>Найденные PDF-отчеты</h3></div><span>Анализ запускается только по вашему запросу</span></div><div className="cards">{documents.filter((item) => item.previewable).length ? documents.filter((item) => item.previewable).map((item) => <article className="report-card source-report-card" key={item.id}><p>PDF / {item.reporting_standard ?? item.document_type} / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3><span className="report-summary">Оригинал сохранен без изменений · {item.size_bytes ? formatBytes(item.size_bytes) : "размер уточняется"}</span><Status value={item.status} /><div className="report-actions"><button onClick={() => setPreviewDocument(item)}>Предпросмотр</button><button className="analyze-button" disabled={analysisDocumentId === item.id} onClick={() => void analyzeDocument(item)}>{analysisDocumentId === item.id ? "Запускаю…" : "Проанализировать"}</button><a href={`/api/documents/${item.id}/download`}>Скачать PDF</a></div>{item.source_url && <details className="card-source"><summary>Первоисточник</summary><a href={safeExternalUrl(item.source_url)} target="_blank" rel="noreferrer">Открыть официальный источник ↗</a></details>}</article>) : <Empty text="Попросите агента найти отчет или загрузите PDF в библиотеке." />}</div></section>
-          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">АНАЛИТИКА</p><h3>Подготовленные аналитические отчеты</h3></div><span>HTML-предпросмотр и выгрузки</span></div><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); return <article className="report-card" key={item.id}><p>ANALYSIS / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview} onClick={() => setPreviewReport(item)}>{item.status === "queued" || item.status === "processing" ? "Готовится…" : "Предпросмотр"}</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}</div></article>; }) : <Empty text="Выберите PDF выше и нажмите «Проанализировать» или попросите об анализе в чате." />}</div></section>
+          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">ОРИГИНАЛЫ</p><h3>Найденные PDF-отчеты</h3></div><span>Анализ запускается только по вашему запросу</span></div><div className="cards">{documents.filter((item) => item.previewable).length ? documents.filter((item) => item.previewable).map((item) => <article className="report-card source-report-card" key={item.id}><p>PDF / {item.reporting_standard ?? item.document_type} / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3><span className="report-summary">Оригинал сохранен без изменений · {item.size_bytes ? formatBytes(item.size_bytes) : "размер уточняется"}</span><Status value={item.status} /><div className="report-actions"><button onClick={() => setPreviewDocument(item)}>Предпросмотр</button><button className="analyze-button" disabled={analysisDocumentId === item.id} onClick={() => void analyzeDocument(item)}>{analysisDocumentId === item.id ? "Запускаю…" : "Проанализировать"}</button><a href={`/api/documents/${item.id}/download`}>Скачать PDF</a><button className="delete-button" disabled={deletingId === item.id} onClick={() => void deleteDocumentItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div>{item.source_url && <details className="card-source"><summary>Первоисточник</summary><a href={safeExternalUrl(item.source_url)} target="_blank" rel="noreferrer">Открыть официальный источник ↗</a></details>}</article>) : <Empty text="Попросите агента найти отчет или загрузите PDF в библиотеке." />}</div></section>
+          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">АНАЛИТИКА</p><h3>Подготовленные аналитические отчеты</h3></div><span>HTML-предпросмотр и выгрузки</span></div><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); const processing = item.status === "queued" || item.status === "processing"; return <article className="report-card" key={item.id}><p>ANALYSIS / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview} onClick={() => setPreviewReport(item)}>{processing ? "Готовится…" : "Предпросмотр"}</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}<button className="delete-button" disabled={processing || deletingId === item.id} title={processing ? "Удаление доступно после завершения" : "Удалить отчет"} onClick={() => void deleteReportItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div></article>; }) : <Empty text="Выберите PDF выше и нажмите «Проанализировать» или попросите об анализе в чате." />}</div></section>
           {previewReport && <ReportPreview report={previewReport} onClose={() => setPreviewReport(undefined)} />}{previewDocument && <DocumentPreview document={previewDocument} onClose={() => setPreviewDocument(undefined)} />}
         </Panel>}
 

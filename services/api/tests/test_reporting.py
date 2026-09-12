@@ -2,7 +2,13 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.lieflat import LIEFLAT_COMMIT, format_fact_value, report_contract, rung_chart
+from app.services.lieflat import (
+    LIEFLAT_COMMIT,
+    chart_contract,
+    format_fact_value,
+    report_contract,
+    rung_chart,
+)
 from app.services.reporting import ReportService
 
 
@@ -61,6 +67,17 @@ def test_rung_chart_uses_fact_provenance_and_honest_unit():
     assert 'class="bar"' in rendered
 
 
+def test_two_period_facts_use_real_f6_paired_rungs_contract():
+    contract = chart_contract(facts())
+    rendered = rung_chart(facts(), contract.chart_id)
+    assert contract.chart_id == "F6"
+    assert contract.candidates == ("F6", "F12", "F1")
+    assert 'data-template="F6"' in rendered
+    assert 'data-gallery="templates/basics-gallery.html"' in rendered
+    assert 'class="bar rung previous fade"' in rendered
+    assert 'class="bar rung current fade"' in rendered
+
+
 def test_ratio_is_formatted_as_percent_even_if_source_currency_is_rub():
     assert format_fact_value(
         {"metric_code": "capital_adequacy_ratio", "value": "14.70000000", "currency": "RUB"}
@@ -106,6 +123,31 @@ def test_report_html_is_offline_and_has_no_demo_data():
     assert "Не является инвестиционной рекомендацией" in rendered
     assert '<details class="sources">' in rendered
     assert "125 ₽" in rendered
+    assert 'data-template-source="templates/reports/report-04.zh.html"' in rendered
+    assert "LIEFLAT 报告模板 04" in rendered
+    assert "REAL TEMPLATE FROM BASICS-GALLERY.HTML" in rendered
+
+
+def test_comparison_and_brief_use_vendored_report_skeletons():
+    service = ReportService.__new__(ReportService)
+    service.models = SimpleNamespace(settings=SimpleNamespace(lieflat_dir=Path("/opt/lieflat-charts")))
+    narrative = {
+        "summary": "Прибыль изменилась.",
+        "highlights": [{"text": "Рост подтвержден.", "fact_ids": ["fact-old", "fact-new"]}],
+        "risks": [],
+        "chart": {"template": "F6", "metric_codes": ["net_profit"]},
+    }
+    comparison = service._html(
+        SimpleNamespace(title="Сравнение", report_kind="comparison"), narrative, facts()
+    )
+    brief = service._html(SimpleNamespace(title="Справка", report_kind="brief"), narrative, facts())
+    assert 'data-lieflat-report="R09"' in comparison
+    assert 'data-template-source="templates/reports/report-09.zh.html"' in comparison
+    assert "LIEFLAT 报告模板 09" in comparison
+    assert 'data-lieflat-report="R11"' in brief
+    assert 'data-template-source="templates/reports/report-11.zh.html"' in brief
+    assert "LIEFLAT 报告模板 11" in brief
+    assert "<script src=" not in comparison + brief
 
 
 def test_decimal_calculations_feed_xlsx():

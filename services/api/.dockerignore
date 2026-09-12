@@ -4,4 +4,5 @@ __pycache__
 *.pyc
 test-data
 test_bank_reporter.sqlite3
+tests/.runtime
 .env*

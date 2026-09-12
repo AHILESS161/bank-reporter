@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
@@ -47,6 +49,28 @@ def test_report_preview_is_inline_and_sandboxed(tmp_path):
         assert response.status_code == 200
         assert response.headers["content-disposition"] == "inline"
         assert "frame-ancestors 'self'" in response.headers["content-security-policy"]
+
+
+def test_report_delete_removes_database_record_and_artifacts(tmp_path, monkeypatch):
+    artifact_dir = tmp_path / "artifacts"
+    report_dir = artifact_dir / "delete-report"
+    report_dir.mkdir(parents=True)
+    artifact_path = report_dir / "report.html"
+    artifact_path.write_text("report", encoding="utf-8")
+    monkeypatch.setattr("app.services.storage.get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
+    with TestClient(app) as client, SessionLocal() as db:
+        report = Report(id="delete-report", title="Удалить", report_kind="financial", document_ids=[], status="completed")
+        db.add(report)
+        db.flush()
+        db.add(Artifact(report_id=report.id, format="html", mime_type="text/html", storage_path=str(artifact_path), size_bytes=6, sha256="2" * 64))
+        db.commit()
+
+        report_id = report.id
+        response = client.delete(f"/api/reports/{report_id}")
+        assert response.status_code == 204
+        db.expunge_all()
+        assert db.get(Report, report_id) is None
+        assert not report_dir.exists()
 
 
 def test_pdf_document_is_listed_and_previewed_inline(tmp_path):

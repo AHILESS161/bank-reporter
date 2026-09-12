@@ -101,7 +101,7 @@ class ModelRouter:
             "Не пересчитывай значения мысленно и не добавляй числа. Для текста используй готовое поле display_value, "
             "а не сырые value/unit_scale/currency. Верни JSON с ключами summary, highlights, risks, chart. "
             "Каждый highlights элемент: {text, fact_ids:[...]}; fact_ids обязаны существовать. "
-            "chart: {template, metric_codes}; template только F1,F2,F3,F6,F7,F8,F9,F10,F11,F12,F13,F17,L16. "
+            "chart: {template, metric_codes}; template только F1,F2,F3,F5,F6,F7,F8,F9,F10,F11,F12,F13,F17,L16. "
             f"Вопрос: {question}\nФакты: {json.dumps(facts, ensure_ascii=False, default=str)}"
         )
         last_error: Exception | None = None
@@ -127,7 +127,7 @@ class ModelRouter:
     def _validate_narrative(data: dict, fact_ids: set[str]) -> None:
         if not isinstance(data.get("summary"), str) or not isinstance(data.get("highlights"), list):
             raise ValueError("Неверная схема финансового ответа")
-        allowed = {"F1", "F2", "F3", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F17", "L16"}
+        allowed = {"F1", "F2", "F3", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F17", "L16"}
         if data.get("chart", {}).get("template") not in allowed:
             raise ValueError("Неподдерживаемый шаблон")
         for item in data["highlights"]:

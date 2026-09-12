@@ -537,6 +537,19 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
     return item
 
 
+@app.delete("/api/reports/{report_id}")
+def delete_report(report_id: str, db: Session = Depends(get_db)):
+    item = db.get(Report, report_id)
+    if not item:
+        raise HTTPException(404, "Report not found")
+    if item.status in {"queued", "processing"}:
+        raise HTTPException(409, "Дождитесь завершения создания отчета")
+    Storage().remove_report(item.id)
+    db.delete(item)
+    db.commit()
+    return Response(status_code=204)
+
+
 @app.get("/api/reports/{report_id}/preview")
 def preview_report(report_id: str, db: Session = Depends(get_db)):
     report = db.get(Report, report_id)

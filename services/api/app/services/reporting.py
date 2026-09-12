@@ -13,11 +13,13 @@ from .browser import BrowserClient
 from .financial import growth
 from .lieflat import (
     LIEFLAT_COMMIT,
+    chart_contract,
     format_fact_value,
     format_number,
     report_contract,
     rung_chart,
     select_chart,
+    template_styles,
 )
 from .model_router import ModelRouter, ModelUnavailable
 from .security import file_sha256
@@ -152,11 +154,11 @@ class ReportService:
             return "координата источника не указана"
 
         highlights = "".join(
-            f'<li data-provenance="{html.escape(",".join(item.get("fact_ids", [])))}">'
+            f'<li data-provenance="{html.escape(",".join(dict.fromkeys(item.get("fact_ids", []))))}">'
             f'<span>{html.escape(present_text(item.get("text", ""), item.get("fact_ids", [])))}</span>'
             + "".join(
                 f'<a class="footnote" href="#source-{html.escape(str(fact_id))}">[{source_number.get(str(fact_id), "")}]</a>'
-                for fact_id in item.get("fact_ids", [])
+                for fact_id in dict.fromkeys(item.get("fact_ids", []))
                 if str(fact_id) in source_number
             )
             + "</li>"
@@ -185,6 +187,83 @@ class ReportService:
             f'<small>{html.escape(str(item.get("period_end") or "Период не указан"))}</small></article>'
             for item in latest_facts[:6]
         )
+        if contract.report_id == "R09":
+            chart_choice = chart_contract(facts)
+            template_css = template_styles(contract, self.models.settings.lieflat_dir)
+            rail_kpis = "".join(
+                f'<div class="kpi"><div class="h">{html.escape(str(item.get("label") or item.get("metric_code")))}</div>'
+                f'<div class="d">{html.escape(str(item.get("period_end") or "Период не указан"))}</div>'
+                f'<div class="box"><div class="v">{html.escape(format_fact_value(item))}</div></div></div>'
+                for item in latest_facts[:6]
+            )
+            return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(report.title)}</title>
+<!-- Lieflat report source: {contract.source_file} @ {LIEFLAT_COMMIT}; candidates: {", ".join(contract.candidates)}; {html.escape(contract.selection_reason)} -->
+<!-- Lieflat chart source: {chart_choice.source_file} / {chart_choice.chart_id} / {html.escape(chart_choice.source_title)}; candidates: {", ".join(chart_choice.candidates)}; {html.escape(chart_choice.selection_reason)} -->
+<style>{template_css}
+.sheet{{max-width:100%}}.hero{{grid-template-columns:1.2fr .8fr}}.hero h1{{font-size:48px;line-height:1.12}}.hero .dek{{max-width:580px;font-size:14px}}.audit{{border-top:1px solid var(--txt);border-bottom:1px solid var(--txt);padding:18px 0}}.audit b,.audit span{{display:block}}.audit b{{font-size:13px}}.audit span{{margin-top:8px;color:var(--mut);font-size:10px;line-height:1.6}}.main{{grid-template-columns:minmax(0,1fr) 310px}}.g2{{grid-template-columns:1fr}}.cell .panel{{padding:18px 12px}}.lieflat-chart{{display:block;width:100%;height:auto;min-height:360px}}.insights{{margin-top:28px;border-top:1px solid var(--txt);padding-top:18px}}.insights ol{{padding-left:20px}}.insights li{{margin-bottom:12px;font-size:12px;line-height:1.6}}.risks{{margin-top:26px}}.risks h3{{font-size:13px;margin-bottom:10px}}.risks ul{{padding-left:18px}}.risks li{{margin-bottom:9px;color:var(--mut);font-size:10px;line-height:1.55}}.sources{{margin-top:40px;border-top:1px solid var(--txt);border-bottom:1px solid var(--txt)}}.sources summary{{display:flex;justify-content:space-between;padding:14px 0;cursor:pointer;list-style:none;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}}.sources summary::-webkit-details-marker{{display:none}}.sources summary:after{{content:'＋'}}.sources[open] summary:after{{content:'−'}}.source-list{{margin:0;padding:0 0 12px;list-style:none}}.source-list li{{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:10px;padding:10px 0;border-top:1px dotted var(--faint)}}.source-list a{{color:var(--txt);font-size:10px;font-weight:700}}.source-list small{{display:block;margin-top:4px;color:var(--mut);font-size:8px}}.source-list code{{max-width:130px;overflow:hidden;text-overflow:ellipsis;color:var(--faint);font-size:7px}}@media(max-width:760px){{.hero,.main{{grid-template-columns:1fr}}.hero h1{{font-size:36px}}.rail{{margin-top:20px}}.source-list li{{grid-template-columns:24px 1fr}}.source-list code{{display:none}}}}@media print{{body{{padding:0}}.sources>summary{{display:none}}.sources>.source-list{{display:block}}}}
+</style></head><body><main class="sheet" data-lieflat-report="R09" data-lieflat-chart="{chart_id}" data-lieflat-commit="{LIEFLAT_COMMIT}" data-template-source="{contract.source_file}">
+<header class="topbar"><span class="l">BANK REPORTER / PORCELAIN</span><span class="r">DATA STORY DASHBOARD · ПРОВЕРЯЕМЫЙ АНАЛИЗ</span></header><section class="hero"><div><h1>{html.escape(report.title)}</h1><div class="dek">{html.escape(present_text(narrative["summary"]))}</div><div class="meta"><div class="n">Сравнение финансовых KPI</div><div class="d">Каждое число связано с <b>ProvenanceRef</b></div></div></div><aside class="audit"><b>Почему {chart_choice.chart_id}</b><span>{html.escape(chart_choice.selection_reason)}</span><span>Рассмотрены: {", ".join(chart_choice.candidates)}</span></aside></section><div class="dotrule"></div>
+<div class="main"><section class="glance"><div class="ttl"><h2>AT A GLANCE</h2><span class="ex">Текущий период против предыдущего</span></div><div class="g2"><article class="cell"><div class="claim">Динамика ключевых показателей</div><div class="micro">СВЕТЛОЕ = ПРЕДЫДУЩИЙ · ТЕМНОЕ = ТЕКУЩИЙ</div><div class="panel fig">{chart if facts else '<p>Нормализованные показатели не найдены.</p>'}</div><div class="srcline">{chart_choice.chart_id} · {html.escape(chart_choice.source_title.upper())} · REAL TEMPLATE</div></article></div><div class="insights"><h3>Что важно</h3><ol>{highlights or '<li>Требуется ручная проверка извлечения.</li>'}</ol></div></section>
+<aside class="rail"><h2>A STARTING POINT</h2><p class="intro">Ключевые значения последнего доступного периода. Валюта и масштаб приведены к читаемому виду.</p><div class="kgrid">{rail_kpis}</div><section class="risks"><h3>ОГРАНИЧЕНИЯ</h3><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></section></aside></div>
+<details class="sources"><summary><span>Источники и координаты · {len(facts)} записей</span></summary><ol class="source-list">{sources or '<li>Источники не привязаны.</li>'}</ol></details><footer class="foot"><div class="warn">Не является инвестиционной рекомендацией<small>Детерминированные расчеты · проверяемые источники</small></div><div class="src">R09 DATA STORY DASHBOARD<br>{html.escape(contract.source_file)}</div><div class="logo">BANK<br>REPORTER</div></footer></main></body></html>'''
+        if contract.report_id == "R04":
+            chart_choice = chart_contract(facts)
+            stat_groups = "".join(
+                "<div>"
+                + "".join(
+                    f'<div class="kpi"><div class="v">{html.escape(format_fact_value(item))}</div>'
+                    f'<div class="r">{html.escape(str(item.get("period_end") or "Период не указан"))}</div>'
+                    f'<div class="l">{html.escape(str(item.get("label") or item.get("metric_code")))}</div></div>'
+                    for item in latest_facts[offset : offset + 2]
+                )
+                + "</div>"
+                for offset in range(0, min(len(latest_facts), 6), 2)
+            )
+            ranked = "".join(
+                f'<div class="row"><div class="n">{index:02d}</div><div class="d">'
+                f'{html.escape(present_text(item.get("text", ""), item.get("fact_ids", [])))}</div></div>'
+                for index, item in enumerate(narrative.get("highlights", [])[:3], 1)
+            )
+            template_css = template_styles(contract, self.models.settings.lieflat_dir)
+            return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(report.title)}</title>
+<!-- Lieflat report source: {contract.source_file} @ {LIEFLAT_COMMIT}; candidates: {", ".join(contract.candidates)}; {html.escape(contract.selection_reason)} -->
+<!-- Lieflat chart source: {chart_choice.source_file} / {chart_choice.chart_id} / {html.escape(chart_choice.source_title)}; candidates: {", ".join(chart_choice.candidates)}; {html.escape(chart_choice.selection_reason)} -->
+<style>{template_css}
+.sheet{{max-width:100%}}.content{{min-width:0}}.report-title{{margin:0 0 17px;font-size:46px;line-height:1.05;letter-spacing:-.035em}}.report-intro{{max-width:820px;margin:0 0 34px;color:var(--muted);font-size:16px;line-height:1.65}}.fig>.lieflat-chart{{display:block;width:100%;height:auto;min-height:360px}}.editorial{{display:grid;grid-template-columns:1.45fr 1fr;gap:40px;margin-top:18px}}.editorial h3{{margin-bottom:12px;font-size:13px;letter-spacing:.12em;text-transform:uppercase}}.editorial ol,.editorial ul{{padding-left:20px}}.editorial li{{margin-bottom:12px;font-size:13px;line-height:1.6}}.stats{{grid-template-columns:repeat(3,minmax(0,1fr)) 1.4fr}}.stats .v{{overflow-wrap:anywhere}}.sources{{margin-top:34px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}}.sources summary{{display:flex;align-items:center;justify-content:space-between;padding:14px 0;cursor:pointer;list-style:none;font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}}.sources summary::-webkit-details-marker{{display:none}}.sources summary:after{{content:'＋';font-size:16px}}.sources[open] summary:after{{content:'−'}}.source-list{{margin:0;padding:0 0 12px;list-style:none}}.source-list li{{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:12px;padding:11px 0;border-top:1px dotted var(--faint)}}.source-list a{{font-size:11px;font-weight:700;color:var(--ink)}}.source-list small{{display:block;margin-top:4px;color:var(--muted);font-size:9px}}.source-list code{{max-width:155px;overflow:hidden;text-overflow:ellipsis;color:var(--faint);font-size:8px}}@media(max-width:760px){{.sheet{{grid-template-columns:54px 1fr}}.spine .t{{left:8px;font-size:30px}}.content{{padding-left:20px}}.report-title{{font-size:34px}}.editorial{{grid-template-columns:1fr}}.stats{{grid-template-columns:1fr 1fr}}.source-list li{{grid-template-columns:25px 1fr}}.source-list code{{display:none}}}}@media print{{body{{padding:0}}.sources>summary{{display:none}}.sources>.source-list{{display:block}}}}
+</style></head><body><main class="sheet" data-lieflat-report="R04" data-lieflat-chart="{chart_id}" data-lieflat-commit="{LIEFLAT_COMMIT}" data-template-source="{contract.source_file}">
+<aside class="spine"><div class="t">ФИНАНСОВЫЙ ОТЧЕТ</div><div class="b">BANK REPORTER · R04</div></aside><div class="content"><div class="tophead"><span class="site">BANK REPORTER</span><span class="sep">|</span><span class="tag">ПРОВЕРЯЕМЫЙ АНАЛИЗ · PORCELAIN</span></div>
+<h1 class="report-title">{html.escape(report.title)}</h1><p class="report-intro">{html.escape(present_text(narrative["summary"]))}</p>
+<section><div class="secthead first"><span class="line"></span><span class="t">ДИНАМИКА ПОКАЗАТЕЛЕЙ</span></div><div class="claim">Текущий период против предыдущего — значения приведены к читаемым единицам</div><div class="fig">{chart if facts else '<p>Нормализованные показатели не найдены.</p>'}</div><div class="srcline">{chart_choice.chart_id} · {html.escape(chart_choice.source_title.upper())} · REAL TEMPLATE FROM BASICS-GALLERY.HTML</div></section>
+<section><div class="secthead"><span class="line"></span><span class="t">РЕДАКЦИОННЫЙ ВЫВОД</span></div><div class="editorial"><div><h3>Что важно</h3><ol>{highlights or '<li>Требуется ручная проверка извлечения.</li>'}</ol></div><div><h3>Ограничения</h3><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></div></div></section>
+<section><div class="secthead"><span class="line"></span><span class="t">КЛЮЧЕВЫЕ ЦИФРЫ</span></div><div class="stats">{stat_groups}<div class="ranked"><h4>ГЛАВНЫЕ НАБЛЮДЕНИЯ</h4>{ranked or '<div class="row"><div class="n">—</div><div class="d">Недостаточно подтвержденных наблюдений.</div></div>'}</div></div></section>
+<details class="sources"><summary><span>Источники и координаты</span><strong>{len(facts)} записей</strong></summary><ol class="source-list">{sources or '<li>Источники не привязаны.</li>'}</ol></details>
+<footer class="foot"><span>Не является инвестиционной рекомендацией · Каждое число связано с ProvenanceRef</span><span>LIEFLAT CHARTS · POLYFORM NONCOMMERCIAL 1.0.0</span></footer></div></main></body></html>'''
+        if contract.report_id == "R11":
+            chart_choice = chart_contract(facts)
+            template_css = template_styles(contract, self.models.settings.lieflat_dir)
+            hero_fact = latest_facts[0] if latest_facts else None
+            hero_value = format_fact_value(hero_fact) if hero_fact else "—"
+            hero_label = str(hero_fact.get("label") or hero_fact.get("metric_code")) if hero_fact else "Нет подтвержденного показателя"
+            signals = "".join(
+                f'<div class="signal"><b>{html.escape(format_fact_value(item))}</b>'
+                f'<span>{html.escape(str(item.get("label") or item.get("metric_code")))}</span></div>'
+                for item in latest_facts[1:5]
+            )
+            takeaway = next(
+                (present_text(item.get("text", ""), item.get("fact_ids", [])) for item in narrative.get("highlights", []) if item.get("text")),
+                present_text(narrative["summary"]),
+            )
+            return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(report.title)}</title>
+<!-- Lieflat report source: {contract.source_file} @ {LIEFLAT_COMMIT}; candidates: {", ".join(contract.candidates)}; {html.escape(contract.selection_reason)} -->
+<!-- Lieflat chart source: {chart_choice.source_file} / {chart_choice.chart_id}; candidates: {", ".join(chart_choice.candidates)}; {html.escape(chart_choice.selection_reason)} -->
+<style>{template_css}
+.inner{{grid-template-rows:auto auto 164px 1fr auto auto}}.hero-stat strong{{font-size:34px;line-height:1.05;overflow-wrap:anywhere}}.hero-stat span{{margin-top:12px}}.chart-wrap{{height:245px}}.lieflat-chart{{display:block;width:100%;height:100%}}.signals{{grid-template-columns:1fr}}.signal{{min-height:58px}}.signal b{{font-size:17px}}.brief-sources{{border-top:1px solid var(--grid);padding-top:8px}}.brief-sources summary{{cursor:pointer;list-style:none;font-size:8px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}}.brief-sources summary::-webkit-details-marker{{display:none}}.brief-sources ol{{max-height:130px;margin:7px 0 0;padding:7px 0 0 18px;overflow:auto;border-top:1px solid var(--grid)}}.brief-sources li{{margin-bottom:5px;font-size:7px}}.brief-sources a{{color:var(--ink)}}.brief-sources code{{display:none}}@media print{{body{{padding:0}}}}
+</style></head><body><div class="stage" id="stage"><main class="report" data-lieflat-report="R11" data-lieflat-chart="{chart_id}" data-lieflat-commit="{LIEFLAT_COMMIT}" data-template-source="{contract.source_file}"><div class="inner">
+<header class="mast"><strong>Bank Reporter / Mono</strong><span>Research brief · R11</span></header><section><h1>{html.escape(report.title)}</h1><p class="dek">{html.escape(present_text(narrative["summary"]))}</p><p class="meta"><b>ПРОВЕРЕНО</b><br>{len(facts)} фактов<br>с координатами</p></section>
+<section class="hero"><div class="hero-stat"><strong>{html.escape(hero_value)}</strong><span>{html.escape(hero_label)}</span></div><div class="hero-copy"><h2>{html.escape(takeaway)}</h2><p>Модель интерпретирует только нормализованные факты; расчеты выполняются детерминированно.</p><div class="labels"><span>{chart_choice.chart_id}</span><span>provenance</span><span>offline</span></div></div></section>
+<section class="content"><div class="panel"><div class="panel-title"><h3>Финансовый профиль</h3><span>{chart_choice.chart_id} · REAL TEMPLATE</span></div><div class="chart-wrap">{chart if facts else '<p>Нормализованные показатели не найдены.</p>'}</div><p class="note">{html.escape(chart_choice.selection_reason)}</p></div><div class="panel"><div class="panel-title"><h3>Ключевые сигналы</h3><span>Последний период</span></div><div class="signals">{signals or '<div class="signal"><b>—</b><span>Недостаточно данных</span></div>'}</div></div></section>
+<section class="takeaway"><div class="takeaway-label">One-page takeaway</div><p>{html.escape(takeaway)}</p></section><details class="brief-sources"><summary>Источники и координаты · {len(facts)}</summary><ol>{sources or '<li>Источники не привязаны.</li>'}</ol></details><footer class="footer"><span><span class="demo">Не является инвестиционной рекомендацией.</span><br>Каждое число связано с ProvenanceRef.</span><span>LIEFLAT / R11<br>POLYFORM NONCOMMERCIAL</span></footer>
+</div></main></div></body></html>'''
         width = "600px" if contract.report_id == "R11" else "1080px"
         return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{html.escape(report.title)}</title>
 <!-- Lieflat source: {contract.source_file} @ {LIEFLAT_COMMIT}; candidates: {", ".join(contract.candidates)}; {html.escape(contract.selection_reason)} -->

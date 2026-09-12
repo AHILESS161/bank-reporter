@@ -16,7 +16,7 @@ SUPPORTED_REPORTS = {
     "brief": ("R11", "templates/reports/report-11.zh.html"),
 }
 SUPPORTED_CHARTS = {
-    "F1", "F2", "F3", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F17", "L16"
+    "F1", "F2", "F3", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F17", "L16"
 }
 PERCENT_METRICS = {
     "capital_adequacy",
@@ -32,6 +32,15 @@ PERCENT_METRICS = {
 class TemplateContract:
     report_id: str
     source_file: str
+    candidates: tuple[str, str, str]
+    selection_reason: str
+
+
+@dataclass(frozen=True)
+class ChartContract:
+    chart_id: str
+    source_file: str
+    source_title: str
     candidates: tuple[str, str, str]
     selection_reason: str
 
@@ -55,17 +64,51 @@ def report_contract(kind: str, root: Path | None = None) -> TemplateContract:
     )
 
 
-def select_chart(requested: str, facts: list[dict]) -> str:
-    requested = requested if requested in SUPPORTED_CHARTS else "F1"
-    values = [Decimal(str(item["value"])) for item in facts]
+def template_styles(contract: TemplateContract, root: Path | None) -> str:
+    """Read the real vendored report stylesheet; never fetch template assets at runtime."""
+    candidates = []
+    if root is not None:
+        candidates.append(root / contract.source_file)
+    candidates.append(Path("/opt/lieflat-charts") / contract.source_file)
+    candidates.extend(
+        parent / "third_party" / "lieflat-charts" / contract.source_file
+        for parent in Path(__file__).resolve().parents
+    )
+    source_path = next((path for path in candidates if path.is_file()), None)
+    if source_path is None:
+        return ""
+    source = source_path.read_text(encoding="utf-8")
+    start = source.find("<style>")
+    end = source.find("</style>", start)
+    return source[start + len("<style>") : end] if start >= 0 and end > start else ""
+
+
+def chart_contract(facts: list[dict]) -> ChartContract:
     periods_by_metric: dict[str, set[str]] = {}
-    for item in sorted(facts, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
+    for item in facts:
         periods_by_metric.setdefault(str(item.get("metric_code")), set()).add(str(item.get("period_end")))
-    if any(value < 0 for value in values):
-        return "F9"
     if any(len(periods) >= 2 for periods in periods_by_metric.values()):
-        return "F6"
-    return requested
+        return ChartContract(
+            "F6",
+            "templates/basics-gallery.html",
+            "This year against last, plan by plan",
+            ("F6", "F12", "F1"),
+            "F6 сохраняет две серии по каждому показателю; F12 требует единой счетной единицы между точками, F1 не показывает второй период.",
+        )
+    return ChartContract(
+        "F5",
+        "templates/basics-gallery.html",
+        "Six teams, shipped and counted",
+        ("F5", "F1", "L2"),
+        "F5 выбран для длинных русских названий; вертикальный F1 и L2 не вмещают подписи без сокращений.",
+    )
+
+
+def select_chart(requested: str, facts: list[dict]) -> str:
+    contract = chart_contract(facts)
+    if contract.chart_id in SUPPORTED_CHARTS:
+        return contract.chart_id
+    return requested if requested in SUPPORTED_CHARTS else "F1"
 
 
 def format_number(value: Decimal) -> str:
@@ -107,8 +150,95 @@ def format_fact_value(item: dict) -> str:
     return f"{format_number(display_value)}{f' {suffix}' if suffix else ''}"
 
 
+def paired_rungs_chart(facts: list[dict]) -> str | None:
+    """F6 Paired Rungs using the gallery's two adjacent countable ladders."""
+    grouped: dict[str, list[dict]] = {}
+    for item in facts:
+        grouped.setdefault(str(item.get("metric_code") or item.get("label")), []).append(item)
+    pairs: list[tuple[dict, dict]] = []
+    for items in grouped.values():
+        by_period: dict[str, dict] = {}
+        for item in sorted(items, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
+            by_period.setdefault(str(item.get("period_end") or ""), item)
+        ordered = sorted(by_period.values(), key=lambda fact: str(fact.get("period_end") or ""))
+        if len(ordered) >= 2:
+            pairs.append((ordered[-2], ordered[-1]))
+        if len(pairs) == 6:
+            break
+    if not pairs:
+        return None
+
+    def base_value(item: dict) -> Decimal:
+        return abs(Decimal(str(item["value"])) * Decimal(int(item.get("unit_scale") or 1)))
+
+    indices = []
+    for previous, current in pairs:
+        previous_value = base_value(previous)
+        index = Decimal(100) if not previous_value else base_value(current) / previous_value * Decimal(100)
+        indices.append(index)
+    max_index = max([Decimal(110), *indices])
+    rung_unit = Decimal(5)
+    max_rungs = max(22, int((max_index / rung_unit).to_integral_value(rounding="ROUND_CEILING")))
+    step = min(Decimal("7.6"), Decimal(220) / Decimal(max_rungs))
+    base = Decimal(284)
+    marks: list[str] = []
+    spacing = Decimal(680) / Decimal(len(pairs))
+    for index, ((previous, current), current_index) in enumerate(zip(pairs, indices, strict=True)):
+        center = Decimal(20) + spacing * (Decimal(index) + Decimal("0.5"))
+        previous_x, current_x = center - Decimal(14), center + Decimal(14)
+        previous_rungs = 20
+        current_rungs = max(1, int((current_index / rung_unit).to_integral_value()))
+        for rung in range(previous_rungs):
+            y = base - Decimal(rung) * step
+            width = Decimal("9.2") + Decimal((rung * 7 + index * 3) % 5) / Decimal(4)
+            marks.append(
+                f'<line x1="{previous_x - width}" y1="{y}" x2="{previous_x + width}" y2="{y}" '
+                f'class="bar rung previous fade" style="animation-delay:{index * .08 + rung * .01:.2f}s"/>'
+            )
+        for rung in range(current_rungs):
+            y = base - Decimal(rung) * step
+            width = Decimal("9.2") + Decimal((rung * 5 + index * 7) % 5) / Decimal(4)
+            marks.append(
+                f'<line x1="{current_x - width}" y1="{y}" x2="{current_x + width}" y2="{y}" '
+                f'class="bar rung current fade" style="animation-delay:{.15 + index * .08 + rung * .01:.2f}s"/>'
+            )
+        label = str(current.get("label") or current.get("metric_code") or "Показатель")
+        short_label = label if len(label) <= 17 else f"{label[:16]}…"
+        delta = current_index - Decimal(100)
+        delta_label = f"{format_number(delta)} п.п."
+        top = base - Decimal(current_rungs - 1) * step
+        marks.extend(
+            [
+                f'<text x="{center}" y="{top - 15}" text-anchor="middle" class="value" '
+                f'data-fact-id="{escape(str(current["id"]))}">{escape(format_fact_value(current))}</text>',
+                f'<text x="{center}" y="{top - 3}" text-anchor="middle" class="delta">{escape(delta_label)}</text>',
+                f'<text x="{center}" y="{base + 22}" text-anchor="middle" class="label"><title>{escape(label)}</title>{escape(short_label)}</text>',
+            ]
+        )
+    return (
+        '<svg class="lieflat-chart paired-rungs" data-template="F6" '
+        'data-gallery="templates/basics-gallery.html" viewBox="0 0 720 330" role="img" '
+        'aria-label="Сравнение финансовых показателей: предыдущий и текущий периоды">'
+        '<style>.paired-rungs text{font-family:Inter,system-ui,sans-serif;fill:var(--ink)}'
+        '.paired-rungs .rung{stroke-width:1.8}.paired-rungs .previous{stroke:var(--faint);opacity:.9}'
+        '.paired-rungs .current{stroke:var(--ink)}.paired-rungs .value{font-size:12px;font-weight:800}'
+        '.paired-rungs .delta{font-size:8px;fill:var(--muted);font-weight:700}'
+        '.paired-rungs .label{font-size:8px;fill:var(--muted);font-weight:700}'
+        '.paired-rungs .baseline{stroke:var(--grid);stroke-width:1}</style>'
+        + "".join(marks)
+        + f'<line x1="18" y1="{base + 4}" x2="702" y2="{base + 4}" class="baseline"/>'
+        '<text x="360" y="326" text-anchor="middle" class="delta">'
+        'СВЕТЛОЕ = ПРЕДЫДУЩИЙ ПЕРИОД · ТЕМНОЕ = ТЕКУЩИЙ · ОДНА СТУПЕНЬ = 5 ПУНКТОВ ИНДЕКСА</text>'
+        '</svg>'
+    )
+
+
 def rung_chart(facts: list[dict], chart_id: str) -> str:
     """Render a restrained Lieflat-compatible horizontal comparison chart."""
+    if chart_id == "F6":
+        paired = paired_rungs_chart(facts)
+        if paired:
+            return paired
     selected: list[dict] = []
     seen_metrics: set[str] = set()
     for item in sorted(facts, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
