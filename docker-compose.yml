@@ -28,11 +28,13 @@ services:
 
   browser:
     build: ./services/browser
+    command: ["sh", "-c", "update-ca-certificates >/dev/null && node server.mjs"]
     environment:
       DATA_DIR: /data
       PORT: 8787
     volumes:
       - artifacts:/data
+      - ./certs:/usr/local/share/ca-certificates/local:ro
     shm_size: 1gb
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>{if(!r.ok)process.exit(1)})"]

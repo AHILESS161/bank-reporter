@@ -17,3 +17,4 @@ htmlcov/
 certs/*.crt
 certs/*.pem
 certs/*.der
+!certs/russian-trusted-root-ca.crt

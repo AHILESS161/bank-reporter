@@ -97,7 +97,7 @@ BOOTSTRAP_BANKS = [
         "cbr_reg_number": "1978",
         "name": "ПАО МОСКОВСКИЙ КРЕДИТНЫЙ БАНК",
         "short_name": "МКБ",
-        "official_url": "https://mkb.ru/investor/reports",
+        "official_url": "https://ir.mkb.ru/investor-relations/reports",
         "aliases": ["мкб", "московский кредитный банк"],
     },
     {
@@ -131,8 +131,34 @@ class CBRConnector:
                 .replace("ё", "е")
             )
             if normalized in haystack or any(normalized == alias for alias in item.get("aliases", [])):
-                merged.setdefault(item["cbr_reg_number"], item)
-        return list(merged.values())[:20]
+                existing = merged.get(item["cbr_reg_number"])
+                if existing:
+                    # The CBR directory can contain a media/social homepage rather
+                    # than the bank's disclosure portal. Curated entries only
+                    # override the URL and aliases; identity still comes from CBR.
+                    existing["official_url"] = item.get("official_url")
+                    existing["aliases"] = sorted(
+                        set(existing.get("aliases", [])) | set(item.get("aliases", []))
+                    )
+                    existing["short_name"] = item.get("short_name") or existing.get("short_name")
+                else:
+                    merged[item["cbr_reg_number"]] = item.copy()
+        items = list(merged.values())
+
+        def normalized_name(value: str) -> str:
+            return value.casefold().replace("ё", "е").strip()
+
+        exact = [
+            item
+            for item in items
+            if normalized
+            in {
+                normalized_name(item.get("name", "")),
+                normalized_name(item.get("short_name", "")),
+                *(normalized_name(alias) for alias in item.get("aliases", [])),
+            }
+        ]
+        return (exact or items)[:20]
 
     def _soap_search(self, query: str) -> list[dict]:
         try:
@@ -394,14 +420,26 @@ def discover_document_links(
 ) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict] = []
-    tokens = [value.casefold() for value in (kind, period) if value]
+    kind_value = (kind or "").casefold()
+    kind_tokens = (
+        ("мсфо", "ifrs")
+        if any(value in kind_value for value in ("мсфо", "ifrs"))
+        else ("рсбу", "ras")
+        if any(value in kind_value for value in ("рсбу", "ras"))
+        else tuple(value for value in re.findall(r"[\w-]+", kind_value) if len(value) > 2)
+    )
+    period_match = re.search(r"20\d{2}", period or "")
+    period_token = period_match.group(0) if period_match else (period or "").casefold()
     for link in soup.select("a[href]"):
         href = urljoin(page_url, link.get("href", ""))
         label = link.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-        combined = f"{label} {href}".casefold()
-        if not re.search(r"\.(pdf|xlsx?|csv|zip|dbf)(?:$|\?)", href, re.I):
+        combined = f"{label} {href} {page_url}".casefold()
+        is_file_route = bool(re.search(r"/file/[0-9a-f-]{20,}(?:$|[?#])", href, re.I))
+        if not is_file_route and not re.search(r"\.(pdf|xlsx?|csv|zip|dbf)(?:$|\?)", href, re.I):
             continue
-        if tokens and not all(token in combined for token in tokens):
+        if kind_tokens and not any(token in combined for token in kind_tokens):
+            continue
+        if period_token and period_token not in combined:
             continue
         standard = (
             "ifrs" if "мсфо" in combined or "ifrs" in combined else "ras" if "рсбу" in combined else None

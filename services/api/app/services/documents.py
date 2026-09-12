@@ -92,6 +92,14 @@ class DocumentService:
         temp = self.storage.temporary_path(Path(url.split("?", 1)[0]).suffix or ".bin")
         max_bytes = get_settings().max_file_mb * 1024 * 1024
         final_url = public_download(url, temp, timeout=60, max_bytes=max_bytes)
+        # Disclosure portals often serve PDFs from extensionless UUID URLs.
+        # Detect their signature so the extractor does not reject a valid file.
+        with temp.open("rb") as downloaded:
+            signature = downloaded.read(5)
+        if temp.suffix == ".bin" and signature == b"%PDF-":
+            pdf_temp = temp.with_suffix(".pdf")
+            temp.replace(pdf_temp)
+            temp = pdf_temp
         return self.ingest_path(
             temp, metadata.pop("title", safe_filename(url)), source_url=final_url, **metadata
         )

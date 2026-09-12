@@ -81,6 +81,12 @@ class Extractor:
                         result.tables.append(
                             {"name": f"page_{number}_table_{index + 1}", "page": number, "rows": rows}
                         )
+                        for row in rows:
+                            if len(row) < 2 or not row[0]:
+                                continue
+                            for value in row[1:]:
+                                if self._decimal(value) is not None:
+                                    result.candidates.append(CellFact(row[0], value, page=number))
         except Exception as exc:  # table extraction is best-effort
             result.warnings.append(f"Таблицы PDF не извлечены: {exc}")
         return result

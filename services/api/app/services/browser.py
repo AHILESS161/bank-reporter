@@ -38,6 +38,37 @@ class BrowserClient:
             response.raise_for_status()
             return response.json().get("content", "")
 
+    def read_article(self, url: str) -> dict:
+        """Return bounded, inert page content for the agent to summarize."""
+        validate_public_url(url)
+        try:
+            final_url, content = public_get(url, timeout=30, max_bytes=10 * 1024 * 1024)
+            if content.startswith(b"%PDF"):
+                return {
+                    "url": final_url,
+                    "title": "PDF-документ",
+                    "content": "Это PDF. Для извлечения данных используй download_document.",
+                }
+            page_html = content.decode("utf-8", errors="replace")
+            soup = BeautifulSoup(page_html, "html.parser")
+            title_node = soup.select_one('meta[property="og:title"]') or soup.select_one("title")
+            title = ""
+            if title_node:
+                title = (title_node.get("content") or title_node.get_text(" ", strip=True))[:300]
+            extracted = trafilatura.extract(
+                page_html,
+                include_comments=False,
+                include_tables=True,
+                include_links=False,
+            )
+            text = re.sub(r"\s+", " ", extracted or soup.get_text(" ", strip=True)).strip()
+            return {"url": final_url, "title": title, "content": text[:30_000]}
+        except Exception:
+            # Dynamic pages get one browser-worker attempt. The returned payload
+            # remains data and is never interpreted as an instruction.
+            content = self.read(url)
+            return {"url": url, "title": "", "content": content[:30_000]}
+
     def search_articles(
         self,
         query: str,

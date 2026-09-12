@@ -26,11 +26,51 @@ def test_live_search_parses_cbr_enum_and_official_site(monkeypatch):
     assert result[0]["official_url"] == "https://test-bank.example"
 
 
+def test_curated_disclosure_url_replaces_non_disclosure_cbr_site(monkeypatch):
+    monkeypatch.setattr(
+        CBRConnector,
+        "_soap_search",
+        lambda *_: [
+            {
+                "cbr_reg_number": "1978",
+                "name": "ПАО МОСКОВСКИЙ КРЕДИТНЫЙ БАНК",
+                "short_name": "МКБ",
+                "official_url": "https://dzen.ru/mkb",
+                "aliases": [],
+            },
+            {
+                "cbr_reg_number": "9998",
+                "name": "МКБ «Дон-Тексбанк» ООО",
+                "short_name": "МКБ «Дон-Тексбанк»",
+                "official_url": "https://example.org",
+                "aliases": [],
+            },
+        ],
+    )
+    result = CBRConnector().search_banks("МКБ")
+    assert len(result) == 1
+    assert result[0]["official_url"] == "https://ir.mkb.ru/investor-relations/reports"
+
+
 def test_document_discovery_only_returns_supported_files():
     html = '<a href="/ifrs-2026.pdf">МСФО 2026</a><a href="/news">Новость</a>'
     result = discover_document_links("https://bank.example/investors/", html, "мсфо", "2026")
     assert result == [
         {"title": "МСФО 2026", "url": "https://bank.example/ifrs-2026.pdf", "reporting_standard": "ifrs"}
+    ]
+
+
+def test_document_discovery_supports_extensionless_disclosure_pdf_routes():
+    html = '<a href="/file/59c2d59e-b9ff-438e-9137-17bae2fb3975">Обобщенная отчетность по МСФО за 12 месяцев</a>'
+    result = discover_document_links(
+        "https://ir.mkb.ru/investor-relations/reports/ifrs/2025", html, "МСФО", "2025 год"
+    )
+    assert result == [
+        {
+            "title": "Обобщенная отчетность по МСФО за 12 месяцев",
+            "url": "https://ir.mkb.ru/file/59c2d59e-b9ff-438e-9137-17bae2fb3975",
+            "reporting_standard": "ifrs",
+        }
     ]
 
 

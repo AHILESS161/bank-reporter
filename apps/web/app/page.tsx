@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 type Tab = "chat" | "calendar" | "library" | "reports" | "watchlist" | "settings";
-type Message = { id: string; role: "user" | "assistant"; content: string; created_at?: string };
+type Citation = { message: string; url: string; document_id?: string };
+type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
 type RunEvent = { type: string; payload: Record<string, unknown> };
 type CalendarEvent = { id: string; title: string; starts_at: string; status: string; event_type: string; bank_name?: string; source_url?: string };
 type DocumentItem = { id: string; title: string; document_type: string; status: string; created_at: string; source_url?: string };
@@ -28,6 +29,84 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 
 function Status({ value }: { value: string }) {
   return <span className={`status status-${value}`}>{value}</span>;
+}
+
+function safeExternalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
+  } catch { return undefined; }
+}
+
+function inlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
+  const tokens = value.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g);
+  return tokens.filter(Boolean).map((token, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (token.startsWith("**") && token.endsWith("**")) return <strong key={key}>{token.slice(2, -2)}</strong>;
+    if (token.startsWith("`") && token.endsWith("`")) return <code key={key}>{token.slice(1, -1)}</code>;
+    const link = token.match(/^\[([^\]]+)]\((https?:\/\/[^\s)]+)\)$/);
+    const href = link ? safeExternalUrl(link[2]) : undefined;
+    if (link && href) return <a key={key} href={href} target="_blank" rel="noreferrer">{link[1]} ↗</a>;
+    return token;
+  });
+}
+
+function tableCells(line: string) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isTableSeparator(line: string) {
+  const cells = tableCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line) { index += 1; continue; }
+    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+      const headers = tableCells(line);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        rows.push(tableCells(lines[index])); index += 1;
+      }
+      blocks.push(<div className="markdown-table-wrap" key={`table-${index}`}><table><thead><tr>{headers.map((cell, i) => <th key={i}>{inlineMarkdown(cell, `th-${index}-${i}`)}</th>)}</tr></thead><tbody>{rows.map((row, r) => <tr key={r}>{headers.map((_, c) => <td key={c}>{inlineMarkdown(row[c] ?? "", `td-${index}-${r}-${c}`)}</td>)}</tr>)}</tbody></table></div>);
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const children = inlineMarkdown(heading[2], `h-${index}`);
+      blocks.push(level <= 2 ? <h3 key={index}>{children}</h3> : <h4 key={index}>{children}</h4>);
+      index += 1; continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^[-*]\s+/, "")); index += 1; }
+      blocks.push(<ul key={`ul-${index}`}>{items.map((item, i) => <li key={i}>{inlineMarkdown(item, `li-${index}-${i}`)}</li>)}</ul>); continue;
+    }
+    if (/^\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^\d+[.)]\s+/, "")); index += 1; }
+      blocks.push(<ol key={`ol-${index}`}>{items.map((item, i) => <li key={i}>{inlineMarkdown(item, `oli-${index}-${i}`)}</li>)}</ol>); continue;
+    }
+    const paragraph = [line]; index += 1;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,4})\s+|^[-*]\s+|^\d+[.)]\s+/.test(lines[index].trim()) && !(lines[index].includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1]))) {
+      paragraph.push(lines[index].trim()); index += 1;
+    }
+    blocks.push(<p key={`p-${index}`}>{inlineMarkdown(paragraph.join(" "), `p-${index}`)}</p>);
+  }
+  return <div className="markdown">{blocks}</div>;
+}
+
+function Sources({ citations = [] }: { citations?: Citation[] }) {
+  const unique = citations.filter((item, index) => safeExternalUrl(item.url) && citations.findIndex((candidate) => candidate.url === item.url) === index);
+  if (!unique.length) return null;
+  return <details className="message-sources"><summary>Источники <span>{unique.length}</span></summary><ol>{unique.map((item) => <li key={item.url}><a href={safeExternalUrl(item.url)} target="_blank" rel="noreferrer"><b>{item.message || new URL(item.url).hostname}</b><small>{new URL(item.url).hostname} ↗</small></a></li>)}</ol></details>;
 }
 
 export default function Home() {
@@ -77,6 +156,7 @@ export default function Home() {
       const run = await api<{ run_id: string }>(`/api/threads/${activeThread}/messages`, {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ content: text }),
       });
+      const runCitations: Citation[] = [];
       const stream = new EventSource(`/api/runs/${run.run_id}/events`);
       stream.onmessage = (e) => {
         const item = JSON.parse(e.data) as RunEvent;
@@ -84,9 +164,13 @@ export default function Home() {
           const label = String(item.payload.message ?? item.payload.name ?? item.type);
           setProgress((p) => [...p.slice(-7), label]);
         }
+        if (item.type === "citation" && typeof item.payload.url === "string" && !runCitations.some((source) => source.url === item.payload.url)) {
+          runCitations.push({ message: String(item.payload.message ?? "Источник"), url: item.payload.url, document_id: typeof item.payload.document_id === "string" ? item.payload.document_id : undefined });
+        }
         if (item.type === "completed") {
           const content = String(item.payload.answer ?? "Готово.");
-          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content }]);
+          const completedCitations = Array.isArray(item.payload.citations) ? item.payload.citations as Citation[] : runCitations;
+          setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content, citations: completedCitations }]);
           setBusy(false); stream.close(); void refresh();
         }
         if (item.type === "failed") {
@@ -113,7 +197,7 @@ export default function Home() {
 
         {tab === "chat" && <div className="chat-layout">
           <div className="chat-card">
-            <div className="messages">{messages.map((message) => <article key={message.id} className={`message ${message.role}`}><span>{message.role === "assistant" ? "BR" : "ВЫ"}</span><div>{message.content}</div></article>)}</div>
+            <div className="messages">{messages.map((message) => <article key={message.id} className={`message ${message.role}`}><span>{message.role === "assistant" ? "BR" : "ВЫ"}</span><div>{message.role === "assistant" ? <><MarkdownMessage content={message.content} /><Sources citations={message.citations} /></> : message.content}</div></article>)}</div>
             {progress.length > 0 && <div className="progress"><b>Ход исследования</b>{progress.map((line, i) => <div key={`${line}-${i}`}><i />{line}</div>)}</div>}
             {error && <div className="error">{error}</div>}
             <form onSubmit={submit}><textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Например: найди МСФО ВТБ за I полугодие и сравни прибыль год к году" /><button disabled={busy}>{busy ? "Исследую…" : "Отправить"}</button></form>
