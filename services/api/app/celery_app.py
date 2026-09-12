@@ -16,6 +16,10 @@ celery.conf.update(
     beat_schedule={
         "sync-editorial-calendar": {"task": "calendar.sync", "schedule": crontab(hour=6, minute=0)},
         "forecast-watchlist": {"task": "calendar.forecast", "schedule": crontab(hour=6, minute=20)},
+        "refresh-key-rate-publication": {
+            "task": "calendar.sync_key_rate",
+            "schedule": crontab(hour="8-19", minute="*/30"),
+        },
         "telegram-digest": {"task": "telegram.digest", "schedule": crontab(hour=8, minute=0)},
         "telegram-reminders": {"task": "telegram.reminders", "schedule": crontab(minute=0)},
         "telegram-commands": {"task": "telegram.commands", "schedule": crontab(minute="*")},

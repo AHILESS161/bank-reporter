@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Bank, CalendarEvent, SourceDocument, WatchlistItem
-from .cbr import CBRConnector, discover_document_links
+from .cbr import CBR_KEY_RATE_DECISION, CBRConnector, discover_document_links
 from .documents import DocumentService
 from .financial import forecast_lag_days
 from .minfin import MinfinConnector
@@ -27,9 +27,14 @@ class CalendarService:
             )
             if existing:
                 changed = existing.starts_at != item["starts_at"]
+                was_published = existing.status == "published"
+                published_url = existing.source_url
                 for key, value in item.items():
                     setattr(existing, key, value)
-                if changed:
+                if was_published and item["status"] != "published":
+                    existing.status = "published"
+                    existing.source_url = published_url
+                elif changed and item["status"] != "published":
                     existing.status = "changed"
             else:
                 self.db.add(CalendarEvent(**item))
@@ -83,6 +88,22 @@ class CalendarService:
                     created += 1
         self.db.commit()
         return created
+
+    def sync_key_rate_publication(self) -> int:
+        published_on = CBRConnector().latest_key_rate_decision()
+        if not published_on:
+            return 0
+        event = self.db.scalar(
+            select(CalendarEvent).where(
+                CalendarEvent.external_key == f"cbr:key_rate_meeting:{published_on}"
+            )
+        )
+        if not event or event.status == "published":
+            return 0
+        event.status = "published"
+        event.source_url = CBR_KEY_RATE_DECISION
+        self.db.commit()
+        return 1
 
     def monitor_expected_publications(self, now: datetime | None = None) -> int:
         """Check explicit watchlist sources only during the expected Moscow publication window."""

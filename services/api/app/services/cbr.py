@@ -10,8 +10,37 @@ from bs4 import BeautifulSoup
 
 
 CBR_KEY_RATE_CALENDAR = "https://www.cbr.ru/dkp/cal_mp/"
+CBR_KEY_RATE_DECISION = "https://www.cbr.ru/press/keypr/"
 CBR_STAT_CALENDAR = "https://www.cbr.ru/statistics/indcalendar/"
 CBR_SERVICE = "https://www.cbr.ru/CreditInfoWebServ/CreditOrgInfo.asmx"
+
+RUSSIAN_MONTHS = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
+
+
+def parse_key_rate_decision_date(content: str) -> date | None:
+    text = BeautifulSoup(content, "html.parser").get_text(" ", strip=True)
+    months = "|".join(RUSSIAN_MONTHS)
+    match = re.search(
+        rf"Совет директоров Банка России\s+(\d{{1,2}})\s+({months})\s+(20\d{{2}})\s+года\s+принял решение",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return date(int(match.group(3)), RUSSIAN_MONTHS[match.group(2).casefold()], int(match.group(1)))
 
 # Offline bootstrap only. Live lookup is always attempted first and is not limited to this list.
 BOOTSTRAP_BANKS = [
@@ -254,7 +283,22 @@ class CBRConnector:
             return response.text
 
     def sync_editorial_calendar(self) -> list[dict]:
-        return self._key_rate_events() + self._stat_events()
+        events = self._key_rate_events() + self._stat_events()
+        published_on = self.latest_key_rate_decision()
+        if published_on:
+            for item in events:
+                if item["event_type"] == "key_rate_meeting" and item["starts_at"].date() == published_on:
+                    item["status"] = "published"
+                    item["source_url"] = CBR_KEY_RATE_DECISION
+        return events
+
+    def latest_key_rate_decision(self) -> date | None:
+        try:
+            response = httpx.get(CBR_KEY_RATE_DECISION, timeout=30, follow_redirects=True)
+            response.raise_for_status()
+            return parse_key_rate_decision_date(response.text)
+        except Exception:
+            return None
 
     def _key_rate_events(self) -> list[dict]:
         try:
@@ -262,20 +306,7 @@ class CBRConnector:
         except Exception:
             return []
         text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
-        months = {
-            "января": 1,
-            "февраля": 2,
-            "марта": 3,
-            "апреля": 4,
-            "мая": 5,
-            "июня": 6,
-            "июля": 7,
-            "августа": 8,
-            "сентября": 9,
-            "октября": 10,
-            "ноября": 11,
-            "декабря": 12,
-        }
+        months = RUSSIAN_MONTHS
         pattern = re.compile(r"(\d{1,2})\s+(" + "|".join(months) + r")\s+(20\d{2})\s+года")
         events: list[dict] = []
         for match in pattern.finditer(text):

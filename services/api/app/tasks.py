@@ -61,6 +61,13 @@ def forecast_calendar():
         return CalendarService(db).forecast_watchlist()
 
 
+@celery.task(name="calendar.sync_key_rate")
+def sync_key_rate_publication():
+    create_schema()
+    with SessionLocal() as db:
+        return CalendarService(db).sync_key_rate_publication()
+
+
 @celery.task(name="calendar.monitor_expected")
 def monitor_expected_publications():
     create_schema()

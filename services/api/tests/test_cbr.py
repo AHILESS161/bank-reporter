@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.services.cbr import CBRConnector, discover_document_links
+from app.services.cbr import CBRConnector, discover_document_links, parse_key_rate_decision_date
 
 
 def test_offline_alias_resolution(monkeypatch):
@@ -32,6 +32,12 @@ def test_document_discovery_only_returns_supported_files():
     assert result == [
         {"title": "МСФО 2026", "url": "https://bank.example/ifrs-2026.pdf", "reporting_standard": "ifrs"}
     ]
+
+
+def test_published_key_rate_decision_date_is_extracted():
+    html = """<main>Совет директоров Банка России 11 сентября 2026 года
+    принял решение сохранить ключевую ставку.</main>"""
+    assert parse_key_rate_decision_date(html) == date(2026, 9, 11)
 
 
 def test_form_dates_and_form_validation(monkeypatch):
