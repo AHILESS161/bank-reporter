@@ -17,6 +17,7 @@ class ThreadOut(ORMModel):
     id: str
     title: str
     created_at: datetime
+    updated_at: datetime
 
 
 class MessageCreate(BaseModel):

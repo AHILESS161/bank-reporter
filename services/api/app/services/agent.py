@@ -18,6 +18,7 @@ from ..models import (
     Report,
     RunEvent,
     SourceDocument,
+    Thread,
     ToolRun,
 )
 from .browser import BrowserClient
@@ -581,6 +582,9 @@ class AgentService:
     def _complete(self, run: AnalysisRun, answer: str, status: str = "completed") -> str:
         run.status = status
         run.answer = answer
+        thread = self.db.get(Thread, run.thread_id) if run.thread_id else None
+        if thread:
+            thread.updated_at = datetime.now(timezone.utc)
         self.db.add(
             Message(thread_id=run.thread_id, role="assistant", content=answer, citations=self.sources)
         )

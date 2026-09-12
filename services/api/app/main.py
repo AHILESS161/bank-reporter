@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -33,6 +33,7 @@ from .schemas import (
     DocumentDiscover,
     DocumentOut,
     MessageCreate,
+    MessageOut,
     ReportCreate,
     ReportOut,
     RunCreated,
@@ -144,8 +145,15 @@ def create_thread(payload: ThreadCreate, db: Session = Depends(get_db)):
     return item
 
 
-@app.get("/api/threads/{thread_id}/messages")
+@app.get("/api/threads", response_model=list[ThreadOut])
+def list_threads(db: Session = Depends(get_db)):
+    return list(db.scalars(select(Thread).order_by(Thread.updated_at.desc()).limit(100)).all())
+
+
+@app.get("/api/threads/{thread_id}/messages", response_model=list[MessageOut])
 def thread_messages(thread_id: str, db: Session = Depends(get_db)):
+    if not db.get(Thread, thread_id):
+        raise HTTPException(404, "Thread not found")
     return list(
         db.scalars(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at)).all()
     )
@@ -158,13 +166,15 @@ def send_message(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     db: Session = Depends(get_db),
 ):
-    if not db.get(Thread, thread_id):
+    thread = db.get(Thread, thread_id)
+    if not thread:
         raise HTTPException(404, "Thread not found")
     if idempotency_key:
         existing = db.scalar(select(AnalysisRun).where(AnalysisRun.idempotency_key == idempotency_key))
         if existing:
             return RunCreated(run_id=existing.id)
     message = Message(thread_id=thread_id, role="user", content=payload.content)
+    thread.updated_at = datetime.now(timezone.utc)
     db.add(message)
     db.flush()
     run = AnalysisRun(

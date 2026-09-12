@@ -5,12 +5,20 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 type Tab = "chat" | "calendar" | "library" | "reports" | "watchlist" | "settings";
 type Citation = { message: string; url: string; document_id?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
+type ThreadItem = { id: string; title: string; created_at: string; updated_at: string };
 type RunEvent = { type: string; payload: Record<string, unknown> };
 type CalendarEvent = { id: string; title: string; starts_at: string; status: string; event_type: string; bank_name?: string; source_url?: string };
 type DocumentItem = { id: string; title: string; document_type: string; reporting_standard?: string; status: string; created_at: string; source_url?: string; source_tier: string; mime_type?: string; size_bytes?: number; previewable: boolean };
 type ReportItem = { id: string; title: string; report_kind: string; status: string; summary?: string; created_at: string; artifacts?: { id: string; format: string }[] };
 type WatchItem = { cbr_reg_number: string; bank_name: string; enabled: boolean };
 type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string };
+
+const welcomeMessage: Message = {
+  id: "welcome",
+  role: "assistant",
+  content: "Назовите банк, отчетный период или тему. Я найду первоисточники, покажу ход работы и отделю факты от интерпретации.",
+};
+const activeThreadStorageKey = "bank-reporter-active-thread";
 
 const tabs: { id: Tab; label: string; symbol: string }[] = [
   { id: "chat", label: "Чат", symbol: "↗" },
@@ -116,9 +124,9 @@ function Sources({ citations = [] }: { citations?: Citation[] }) {
 export default function Home() {
   const [tab, setTab] = useState<Tab>("chat");
   const [threadId, setThreadId] = useState<string>();
-  const [messages, setMessages] = useState<Message[]>([
-    { id: "welcome", role: "assistant", content: "Назовите банк, отчетный период или тему. Я найду первоисточники, покажу ход работы и отделю факты от интерпретации." },
-  ]);
+  const [threads, setThreads] = useState<ThreadItem[]>([]);
+  const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
+  const [threadLoading, setThreadLoading] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [progress, setProgress] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -145,7 +153,41 @@ export default function Home() {
     } catch { /* API may still be starting. */ }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  const refreshThreads = useCallback(async () => {
+    const items = await api<ThreadItem[]>("/api/threads");
+    setThreads(items);
+    return items;
+  }, []);
+
+  const openThread = useCallback(async (id: string) => {
+    setThreadLoading(true); setError(""); setProgress([]);
+    try {
+      const savedMessages = await api<Message[]>(`/api/threads/${id}/messages`);
+      setThreadId(id);
+      setMessages(savedMessages.length ? savedMessages : [welcomeMessage]);
+      window.localStorage.setItem(activeThreadStorageKey, id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось открыть сохраненный чат");
+    } finally { setThreadLoading(false); }
+  }, []);
+
+  const newThread = useCallback(() => {
+    setThreadId(undefined); setMessages([welcomeMessage]); setPrompt(""); setProgress([]); setError("");
+    window.localStorage.removeItem(activeThreadStorageKey);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    void (async () => {
+      try {
+        const items = await refreshThreads();
+        const savedId = window.localStorage.getItem(activeThreadStorageKey);
+        const target = items.find((item) => item.id === savedId)?.id ?? items[0]?.id;
+        if (target) await openThread(target);
+        else setThreadLoading(false);
+      } catch { setThreadLoading(false); }
+    })();
+  }, [openThread, refresh, refreshThreads]);
 
   useEffect(() => {
     if (!reports.some((item) => ["queued", "processing"].includes(item.status))) return;
@@ -181,12 +223,13 @@ export default function Home() {
     try {
       let activeThread = threadId;
       if (!activeThread) {
-        const thread = await api<{ id: string }>("/api/threads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: text.slice(0, 80) }) });
-        activeThread = thread.id; setThreadId(activeThread);
+        const thread = await api<ThreadItem>("/api/threads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: text.slice(0, 80) }) });
+        activeThread = thread.id; setThreadId(activeThread); window.localStorage.setItem(activeThreadStorageKey, activeThread);
       }
       const run = await api<{ run_id: string }>(`/api/threads/${activeThread}/messages`, {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ content: text }),
       });
+      void refreshThreads();
       const runCitations: Citation[] = [];
       const stream = new EventSource(`/api/runs/${run.run_id}/events`);
       stream.onmessage = (e) => {
@@ -202,7 +245,7 @@ export default function Home() {
           const content = String(item.payload.answer ?? "Готово.");
           const completedCitations = Array.isArray(item.payload.citations) ? item.payload.citations as Citation[] : runCitations;
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content, citations: completedCitations }]);
-          setBusy(false); setProgress([]); stream.close(); void refresh();
+          setBusy(false); setProgress([]); stream.close(); void refresh(); void refreshThreads();
         }
         if (item.type === "failed") {
           setError(String(item.payload.error ?? "Задание завершилось с ошибкой"));
@@ -228,13 +271,17 @@ export default function Home() {
 
         {tab === "chat" && <div className="chat-layout">
           <div className="chat-card">
-            <div className="messages">{messages.map((message) => <article key={message.id} className={`message ${message.role}`}><span>{message.role === "assistant" ? "BR" : "ВЫ"}</span><div>{message.role === "assistant" ? <><MarkdownMessage content={message.content} /><Sources citations={message.citations} /></> : message.content}</div></article>)}</div>
+            <div className="messages">{threadLoading ? <div className="chat-loading">Загружаю историю…</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}><span>{message.role === "assistant" ? "BR" : "ВЫ"}</span><div>{message.role === "assistant" ? <><MarkdownMessage content={message.content} /><Sources citations={message.citations} /></> : message.content}</div></article>)}</div>
             {progress.length > 0 && <div className="progress"><b>Ход исследования</b>{progress.map((line, i) => <div key={`${line}-${i}`}><i />{line}</div>)}</div>}
             {error && <div className="error">{error}</div>}
             <form onSubmit={submit}><textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Например: найди МСФО ВТБ за I полугодие и сравни прибыль год к году" /><button disabled={busy}>{busy ? "Исследую…" : "Отправить"}</button></form>
             <p className="disclaimer">Не является инвестиционной рекомендацией · Все выводы должны содержать ссылки на первоисточники</p>
           </div>
-          <aside className="context"><h3>Быстрый старт</h3>{["Найди последнюю МСФО Сбера", "Что изменилось в ставке ЦБ?", "Статьи о качестве кредитов", "Сравни два отчетных периода"].map((q) => <button key={q} onClick={() => setPrompt(q)}>{q}</button>)}<h3>Состояние</h3><dl><div><dt>Документы</dt><dd>{documents.length}</dd></div><div><dt>Отчеты</dt><dd>{reports.length}</dd></div><div><dt>События</dt><dd>{calendar.length}</dd></div></dl></aside>
+          <aside className="context">
+            <div className="chat-history-head"><h3>Сохраненные чаты</h3><button disabled={busy} onClick={newThread}>+ Новый</button></div>
+            <div className="chat-history">{threads.length ? threads.map((thread) => <button key={thread.id} disabled={busy || threadLoading} className={thread.id === threadId ? "active" : ""} onClick={() => void openThread(thread.id)}><b>{thread.title}</b><small>{new Date(thread.updated_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</small></button>) : <p>История появится после первого запроса.</p>}</div>
+            <h3>Быстрый старт</h3>{["Найди последнюю МСФО Сбера", "Что изменилось в ставке ЦБ?", "Статьи о качестве кредитов", "Сравни два отчетных периода"].map((q) => <button key={q} onClick={() => setPrompt(q)}>{q}</button>)}<h3>Состояние</h3><dl><div><dt>Документы</dt><dd>{documents.length}</dd></div><div><dt>Отчеты</dt><dd>{reports.length}</dd></div><div><dt>События</dt><dd>{calendar.length}</dd></div></dl>
+          </aside>
         </div>}
 
         {tab === "calendar" && <Panel title="Календарь банковских событий" action={<a href="/api/calendar.ics">Экспортировать ICS</a>}><CalendarMonth events={calendar} /></Panel>}

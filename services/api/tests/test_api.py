@@ -17,6 +17,12 @@ def test_health_and_thread():
         thread = client.post("/api/threads", json={"title": "Тест"})
         assert thread.status_code == 200
         assert thread.json()["title"] == "Тест"
+        listed = client.get("/api/threads")
+        assert listed.status_code == 200
+        assert listed.json()[0]["id"] == thread.json()["id"]
+        messages = client.get(f"/api/threads/{thread.json()['id']}/messages")
+        assert messages.status_code == 200
+        assert messages.json() == []
 
 
 def test_report_preview_is_inline_and_sandboxed(tmp_path):
