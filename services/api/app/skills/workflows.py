@@ -149,6 +149,13 @@ DEFAULT_WORKFLOWS = (
             WorkflowNode(id="facts", skill_id="query_financial_facts", depends_on=["library"]),
             WorkflowNode(id="document", skill_id="read_document", depends_on=["library"], optional=True),
             WorkflowNode(
+                id="professional_context",
+                skill_id="search_professional_reports",
+                depends_on=["bank"],
+                optional=True,
+                note="Публичные рейтинговые и отраслевые обзоры используются только для контекста.",
+            ),
+            WorkflowNode(
                 id="fallback_search",
                 skill_id="search_articles",
                 depends_on=["discover"],
@@ -163,7 +170,7 @@ DEFAULT_WORKFLOWS = (
             WorkflowNode(
                 id="report",
                 skill_id="create_report",
-                depends_on=["facts", "document", "download"],
+                depends_on=["facts", "document", "download", "professional_context"],
             ),
         ],
     ),

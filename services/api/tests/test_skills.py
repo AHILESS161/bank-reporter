@@ -22,7 +22,12 @@ class Host:
 def test_skill_catalog_generates_tool_schemas_and_model_policy():
     registry = build_skill_registry(Host())
     ids = {manifest.id for manifest in registry.manifests()}
-    assert {"resolve_bank", "discover_documents", "create_report"} <= ids
+    assert {
+        "resolve_bank",
+        "discover_documents",
+        "search_professional_reports",
+        "create_report",
+    } <= ids
     report = registry.get("create_report").manifest
     assert report.model_policy is not None
     assert report.model_policy.primary == FINANCE_MODEL
@@ -76,6 +81,8 @@ def test_workflow_registry_routes_and_rejects_cycles():
     workflows = build_workflow_registry(skills)
     assert workflows.route("Найди МСФО").id == "document_discovery"
     assert workflows.route("Сравни два периода", analysis_requested=True).id == "financial_analysis"
+    financial = workflows.get("financial_analysis")
+    assert any(node.skill_id == "search_professional_reports" for node in financial.nodes)
     cyclic = WorkflowManifest(
         id="cyclic_flow",
         title="Cycle",

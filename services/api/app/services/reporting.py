@@ -27,6 +27,7 @@ from .lieflat import (
     trend_series,
 )
 from .model_router import ModelRouter, ModelUnavailable
+from .professional_research import ProfessionalResearchService
 from .security import file_sha256
 from .storage import Storage
 
@@ -37,22 +38,39 @@ class ReportService:
         self.storage = Storage()
         self.models = ModelRouter(db, analysis_run_id)
 
-    def create(self, report: Report, question: str, output_formats: list[str]) -> Report:
+    def create(
+        self,
+        report: Report,
+        question: str,
+        output_formats: list[str],
+        professional_sources: list[dict] | None = None,
+    ) -> Report:
         report.status = "processing"
         self.db.commit()
         rows = self._facts(report.document_ids)
+        if professional_sources is None:
+            entities = dict.fromkeys(str(item.get("entity") or "") for item in rows)
+            professional_sources = ProfessionalResearchService().collect(entities, question)
+        comparisons = self._narrative_comparisons(rows)
         try:
-            narrative = self.models.finance_narrative(rows, question)
+            narrative = self.models.finance_narrative(
+                rows,
+                question,
+                comparisons=comparisons,
+                professional_sources=professional_sources,
+            )
         except ModelUnavailable as exc:
             narrative = {
                 "summary": "Финансовая интерпретация не сформирована.",
                 "highlights": [],
                 "risks": [str(exc)],
                 "chart": {"template": "F1", "metric_codes": []},
+                "professional_context": [],
             }
             report.status = "partial"
         report.summary = narrative["summary"]
         html_path = self.storage.artifact_path(report.id, "report.html")
+        narrative["professional_sources"] = professional_sources
         html_path.write_text(self._html(report, narrative, rows, question), encoding="utf-8")
         self._artifact(report, "html", "text/html", html_path)
         if "xlsx" in output_formats:
@@ -285,6 +303,41 @@ class ReportService:
             else ""
         )
 
+        narrative_highlights = narrative.get("highlights", [])[:4]
+        if view in {"periods", "trend"} and pairs:
+            priority = {
+                "net_profit": 0,
+                "roe": 1,
+                "capital": 2,
+                "capital_adequacy": 3,
+                "capital_adequacy_ratio": 3,
+                "assets": 4,
+                "customer_funds": 5,
+                "loans": 6,
+                "customer_loans": 6,
+            }
+            ordered_pairs = sorted(
+                pairs,
+                key=lambda pair: (
+                    priority.get(str(pair[1].get("metric_code") or "").lower(), 20),
+                    str(pair[1].get("label") or ""),
+                ),
+            )
+            narrative_highlights = []
+            for previous, current in ordered_pairs[:4]:
+                change_text, change_class = delta(previous, current)
+                verb = "вырос" if change_class == "up" else "снизился" if change_class == "down" else "не изменился"
+                label = str(current.get("label") or current.get("metric_code") or "Показатель")
+                narrative_highlights.append(
+                    {
+                        "text": (
+                            f"{label} {verb} на {change_text}: "
+                            f"с {format_fact_value(previous)} до {format_fact_value(current)}."
+                        ),
+                        "fact_ids": [str(previous["id"]), str(current["id"])],
+                    }
+                )
+
         highlights = "".join(
             f'<li><span>{html.escape(present_text(item.get("text", ""), item.get("fact_ids", [])))}</span>'
             + "".join(
@@ -293,11 +346,49 @@ class ReportService:
                 if str(fact_id) in source_number
             )
             + "</li>"
-            for item in narrative.get("highlights", [])[:6]
+            for item in narrative_highlights
         )
+        if view in {"periods", "trend"} and pairs:
+            periods = sorted(
+                {str(item.get("period_end")) for pair in pairs for item in pair if item.get("period_end")}
+            )
+            quality_notes = [
+                f"Сопоставлено показателей: {len(pairs)}; период: {' → '.join(periods[-2:])}."
+            ]
+            unpaired = max(len({str(item.get("metric_code")) for item in latest}) - len(pairs), 0)
+            if unpaired:
+                quality_notes.append(
+                    f"Показателей без сопоставимой пары: {unpaired}; они не использованы для вывода о динамике."
+                )
+            missing_coordinates = sum(
+                1 for item in facts if not (item.get("page") or item.get("sheet") or item.get("cell_range"))
+            )
+            if missing_coordinates:
+                quality_notes.append(
+                    f"У {missing_coordinates} фактов нет точной страницы или ячейки — их следует сверить в оригинале."
+                )
+            else:
+                quality_notes.append(
+                    "Причины изменений требуют проверки по примечаниям к отчётности; график показывает только рассчитанную динамику."
+                )
+        else:
+            quality_notes = [str(item) for item in narrative.get("risks", [])[:3]]
         risks = "".join(
-            f"<li>{html.escape(present_text(str(item)))}</li>"
-            for item in narrative.get("risks", [])[:6]
+            f"<li>{html.escape(present_text(item))}</li>" for item in quality_notes
+        )
+
+        professional_sources = narrative.get("professional_sources", [])[:6]
+        professional_by_id = {str(item.get("id")): item for item in professional_sources}
+        professional_context = "".join(
+            f'<li><span>{html.escape(str(item.get("text") or ""))}</span>'
+            + "".join(
+                f'<a href="#professional-{html.escape(str(source_id))}">[{html.escape(str(source_id))}]</a>'
+                for source_id in dict.fromkeys(item.get("source_ids", []))
+                if str(source_id) in professional_by_id
+            )
+            + "</li>"
+            for item in narrative.get("professional_context", [])[:3]
+            if isinstance(item, dict)
         )
 
         def coordinate(item: dict) -> str:
@@ -317,6 +408,13 @@ class ReportService:
             f'{html.escape(coordinate(item))}</small></div></li>'
             for index, item in enumerate(facts, 1)
         )
+        professional_source_rows = "".join(
+            f'<li id="professional-{html.escape(str(item.get("id")))}"><span>{html.escape(str(item.get("id")))}</span><div>'
+            f'<a href="{html.escape(str(item.get("url") or "#"))}" target="_blank" rel="noreferrer">'
+            f'{html.escape(str(item.get("title") or item.get("publisher") or "Профессиональный обзор"))}</a>'
+            f'<small>{html.escape(str(item.get("publisher") or "Профессиональный источник"))} · внешний аналитический контекст</small></div></li>'
+            for item in professional_sources
+        )
         summary = html.escape(present_text(str(narrative.get("summary") or "")))
         chart_block = (
             f'<section class="chart-panel"><div class="section-head"><div><span>ВИЗУАЛИЗАЦИЯ</span>'
@@ -325,6 +423,14 @@ class ReportService:
             if chart
             else empty_comparison
         )
+        professional_block = (
+            '<section class="context-panel"><div><span>ПРОФЕССИОНАЛЬНЫЙ КОНТЕКСТ</span>'
+            '<h2>Что отмечают внешние аналитики</h2><p>Не заменяет данные банка и не используется для расчёта показателей.</p></div>'
+            f'<ul>{professional_context}</ul></section>'
+            if professional_context
+            else ""
+        )
+        total_sources = len(facts) + len(professional_sources)
         return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(report.title)}</title>
 <!-- Report layout: {view}; Lieflat reference: {contract.source_file} @ {LIEFLAT_COMMIT}. Charts use Bank Reporter deterministic inline SVG. -->
 <style>
@@ -335,14 +441,15 @@ class ReportService:
 .body{{padding:34px 56px 46px}}.metric-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:30px}}.metric-card{{position:relative;min-height:152px;padding:20px;border:1px solid var(--line);border-radius:16px;background:#fff}}.metric-card span,.metric-card small{{display:block;color:var(--muted)}}.metric-card span{{min-height:34px;font-size:12px;line-height:1.4}}.metric-card strong{{display:block;margin:13px 0 8px;font-size:26px;line-height:1.05;letter-spacing:-.025em}}.metric-card small{{font-size:10px}}.metric-card em{{display:inline-block;margin-top:12px;padding:5px 8px;border-radius:7px;background:var(--soft);font-size:12px;font-style:normal;font-weight:850}}.metric-card em.up,.up{{color:var(--accent)}}.metric-card em.down,.down{{color:var(--danger)}}.metric-card>a{{display:inline-block;margin-top:12px;color:var(--accent);font-size:10px}}
 .chart-panel,.analysis-panel{{margin-top:24px;padding:28px;border:1px solid var(--line);border-radius:18px;background:#fff}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:24px}}.section-head span,.analysis-panel>span{{color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.14em}}.section-head h2,.analysis-panel h2{{margin:6px 0 0;font-size:28px;letter-spacing:-.025em}}.section-head p{{max-width:390px;margin:0;color:var(--muted);font-size:12px;line-height:1.5}}.chart-canvas{{padding:18px;border-radius:14px;background:#fafbf9}}.report-chart,.lieflat-chart{{display:block;width:100%;height:auto}}
 .comparison-table{{margin-top:24px;overflow:auto}}.comparison-table table{{width:100%;border-collapse:collapse}}.comparison-table th,.comparison-table td{{padding:14px 12px;border-top:1px solid var(--line);font-size:14px;text-align:left}}.comparison-table thead th{{color:var(--muted);font-size:10px;letter-spacing:.09em;text-transform:uppercase}}.comparison-table td small,.comparison-table td b{{display:block}}.comparison-table td small{{margin-bottom:4px;color:var(--muted);font-size:10px}}.data-warning{{padding:24px;border:1px solid #dfc9a5;border-radius:16px;background:#fff9ee}}.data-warning b,.data-warning span{{display:block}}.data-warning span{{margin-top:8px;color:#6b5b42;line-height:1.55}}
-.analysis-grid{{display:grid;grid-template-columns:1.3fr 1fr;gap:20px}}.analysis-panel ol,.analysis-panel ul{{margin:18px 0 0;padding-left:22px}}.analysis-panel li{{margin-bottom:13px;line-height:1.55}}.analysis-panel li a{{margin-left:3px;color:var(--accent);font-size:10px;vertical-align:super}}
+.analysis-grid{{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(280px,.75fr);gap:20px;align-items:start}}.analysis-panel ol,.analysis-panel ul{{margin:18px 0 0;padding-left:22px}}.analysis-panel li{{margin-bottom:13px;line-height:1.55}}.analysis-panel li a,.context-panel li a{{margin-left:3px;color:var(--accent);font-size:10px;vertical-align:super}}.analysis-panel.quality{{background:var(--soft)}}.analysis-panel.quality h2{{font-size:22px}}.analysis-panel.quality li{{color:#4d5954;font-size:13px}}
+.context-panel{{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(0,1.3fr);gap:32px;margin-top:20px;padding:26px 28px;border-left:4px solid var(--accent);border-radius:4px 16px 16px 4px;background:#edf6f2}}.context-panel span{{color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.14em}}.context-panel h2{{margin:7px 0 8px;font-size:23px}}.context-panel p{{margin:0;color:var(--muted);font-size:12px;line-height:1.5}}.context-panel ul{{margin:0;padding-left:20px}}.context-panel li{{margin-bottom:12px;line-height:1.5}}
 .sources{{margin-top:28px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}}.sources summary{{display:flex;justify-content:space-between;padding:17px 0;cursor:pointer;list-style:none;font-size:12px;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.sources summary::-webkit-details-marker{{display:none}}.sources summary:after{{content:'＋';font-size:17px}}.sources[open] summary:after{{content:'−'}}.sources ol{{margin:0;padding:0 0 14px;list-style:none}}.sources li{{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:12px 0;border-top:1px dotted var(--line)}}.sources li>span{{color:var(--accent);font-size:11px;font-weight:850}}.sources a{{color:var(--ink);font-size:12px;font-weight:750}}.sources small{{display:block;margin-top:4px;color:var(--muted);font-size:10px}}footer{{display:flex;justify-content:space-between;gap:20px;margin-top:28px;color:var(--muted);font-size:10px;line-height:1.5}}
-@media(max-width:900px){{body{{padding:0}}.report{{border:0;border-radius:0}}.hero,.body{{padding:30px 22px}}.metric-grid{{grid-template-columns:1fr 1fr}}.analysis-grid{{grid-template-columns:1fr}}.section-head{{display:block}}.section-head p{{margin-top:8px}}}}
+@media(max-width:900px){{body{{padding:0}}.report{{border:0;border-radius:0}}.hero,.body{{padding:30px 22px}}.metric-grid{{grid-template-columns:1fr 1fr}}.analysis-grid,.context-panel{{grid-template-columns:1fr}}.section-head{{display:block}}.section-head p{{margin-top:8px}}}}
 @media print{{@page{{size:A4;margin:10mm}}body{{padding:0;background:white}}.report{{border:0;box-shadow:none}}.hero{{padding:10mm 9mm 8mm}}.body{{padding:7mm 9mm}}.sources>summary{{display:none}}.sources>ol{{display:block}}}}
 </style></head><body><main class="report" data-report-view="{view}" data-lieflat-report="{contract.report_id}" data-lieflat-chart="{chart_template}" data-lieflat-commit="{LIEFLAT_COMMIT}" data-template-source="{contract.source_file}">
 <header class="hero"><div class="hero-top"><span class="brand">BANK REPORTER · ПРОВЕРЯЕМЫЕ ДАННЫЕ</span><span class="view-label">{html.escape(view_label)}</span></div><h1>{html.escape(report.title)}</h1><p class="summary">{summary or 'Интерпретация отсутствует; ниже приведены только проверяемые факты.'}</p></header>
-<div class="body">{f'<section class="metric-grid">{cards}</section>' if cards else ''}{chart_block}<section class="analysis-grid"><article class="analysis-panel"><span>ГЛАВНЫЕ ВЫВОДЫ</span><h2>Что изменилось</h2><ol>{highlights or '<li>Недостаточно подтверждённых данных для вывода.</li>'}</ol></article><article class="analysis-panel"><span>ОГРАНИЧЕНИЯ</span><h2>Что проверить</h2><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></article></section>
-<details class="sources"><summary>Источники и координаты · {len(facts)}</summary><ol>{sources or '<li>Источники не привязаны.</li>'}</ol></details><footer><span>Не является инвестиционной рекомендацией.</span><span>Все числа связаны с ProvenanceRef · офлайн HTML · без внешних скриптов</span></footer></div></main></body></html>'''
+<div class="body">{f'<section class="metric-grid">{cards}</section>' if cards else ''}{chart_block}<section class="analysis-grid"><article class="analysis-panel"><span>РЕДАКЦИОННЫЙ ИТОГ</span><h2>Главные изменения</h2><ol>{highlights or '<li>Недостаточно подтверждённых данных для вывода.</li>'}</ol></article><aside class="analysis-panel quality"><span>КАЧЕСТВО ДАННЫХ</span><h2>Границы анализа</h2><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></aside></section>{professional_block}
+<details class="sources"><summary>Источники и координаты · {total_sources}</summary><ol>{(sources + professional_source_rows) or '<li>Источники не привязаны.</li>'}</ol></details><footer><span>Не является инвестиционной рекомендацией.</span><span>Все числа связаны с ProvenanceRef · внешний контекст отделён · офлайн HTML</span></footer></div></main></body></html>'''
 
     def _legacy_html(self, report: Report, narrative: dict, facts: list[dict]) -> str:
         effective_kind = "financial" if report.report_kind == "brief" and len(facts) > 6 else report.report_kind
@@ -607,6 +714,51 @@ class ReportService:
                 [item["document"], item["source_url"], item["page"], item["sheet"], item["cell_range"]]
             )
         workbook.save(path)
+
+    @staticmethod
+    def _narrative_comparisons(facts: list[dict]) -> list[dict]:
+        output: list[dict] = []
+        ratio_metrics = {
+            "capital_adequacy",
+            "capital_adequacy_ratio",
+            "npl",
+            "npl_ratio",
+            "roa",
+            "roe",
+        }
+        for previous, current in comparison_pairs(facts):
+            metric = str(current.get("metric_code") or "").lower()
+            currency = str(current.get("currency") or "").upper()
+            if metric in ratio_metrics or currency in {"%", "PERCENT"}:
+                change = Decimal(str(current["value"])) - Decimal(str(previous["value"]))
+                suffix = " п.п."
+            else:
+                previous_value = Decimal(str(previous["value"])) * Decimal(
+                    int(previous.get("unit_scale") or 1)
+                )
+                current_value = Decimal(str(current["value"])) * Decimal(
+                    int(current.get("unit_scale") or 1)
+                )
+                change = growth(current_value, previous_value)
+                suffix = "%"
+            if change is None:
+                change_display = "н/д"
+            else:
+                prefix = "+" if change > 0 else "−" if change < 0 else ""
+                change_display = f"{prefix}{format_number(change.copy_abs())}{suffix}"
+            output.append(
+                {
+                    "metric_code": current.get("metric_code"),
+                    "label": current.get("label"),
+                    "previous_period": str(previous.get("period_end") or ""),
+                    "current_period": str(current.get("period_end") or ""),
+                    "previous_display": format_fact_value(previous),
+                    "current_display": format_fact_value(current),
+                    "change_display": change_display,
+                    "fact_ids": [str(previous["id"]), str(current["id"])],
+                }
+            )
+        return output
 
     @staticmethod
     def _calculations(facts: list[dict]) -> list[dict]:

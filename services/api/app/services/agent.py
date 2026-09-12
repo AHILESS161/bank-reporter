@@ -28,6 +28,7 @@ from .cbr import CBRConnector, discover_document_links
 from .documents import DocumentService
 from .model_router import ModelRouter
 from .network import public_get
+from .professional_research import ProfessionalResearchService
 from .reporting import ReportService
 from .security import domain_of
 
@@ -38,6 +39,8 @@ SYSTEM = """Ты Bank Reporter, агент российского банковс
 Если discover_documents не нашел нужный отчет, не останавливайся: выполни search_articles сначала с site:официальный-домен, затем по открытому вебу; прочитай релевантные HTML-публикации через read_article. Если сам отчет недоступен, собери подтверждаемые основные показатели из официального пресс-релиза и надежных деловых источников. Покажи их GFM-таблицей с колонками «Показатель», «Значение», «Период», «Источник/статус». Отдельно и явно отметь, что это не замена полному отчету. Если доступны загруженные документы, запроси query_financial_facts; если фактов мало — прочитай официальный документ через read_document и используй только числа с видимыми маркерами страниц. После успешного скачивания и чтения официального годового документа сформируй ответ сразу: не продолжай искать вторичные источники, если пользователь явно их не просил.
 
 Если пользователь просит только найти или скачать готовую отчетность, сохрани найденный оригинал и сообщи результат, но НЕ вызывай create_report и не создавай аналитический отчет автоматически. create_report разрешен только при явной просьбе проанализировать, сравнить, построить график или сформировать новый аналитический отчет. Найденный PDF пользователь сам откроет и при необходимости запустит его анализ в разделе «Отчеты».
+
+При аналитическом запросе можно вызвать search_professional_reports. Используй найденные рейтинговые и отраслевые обзоры только для объяснения факторов и рисков. Не подменяй ими цифры первичной отчётности и явно отделяй внешний аналитический контекст.
 
 Ответ давай по-русски, аккуратным Markdown: короткий заголовок, итог, таблица и ограничения по необходимости. Не показывай имена инструментов, UUID и служебные рассуждения. Не печатай отдельный раздел со списком URL: интерфейс автоматически приложит использованные источники в сворачиваемом блоке. Не давай инвестиционных рекомендаций."""
 
@@ -66,6 +69,7 @@ class AgentService:
         self.models = ModelRouter(db, run_id)
         self.pages = 0
         self.sources: list[dict] = []
+        self.professional_sources: list[dict] | None = None
         self.analysis_requested = False
         self.skills = build_skill_registry(self)
         stored = self.db.get(IntegrationState, "custom_workflows")
@@ -340,6 +344,17 @@ class AgentService:
             self._citation(item.title, item.url)
         return [item.__dict__ for item in results]
 
+    def tool_search_professional_reports(self, query: str, limit: int = 4) -> list[dict]:
+        self.pages += 6
+        if self.pages > self.settings.max_web_pages:
+            return [{"error": "Лимит веб-страниц исчерпан"}]
+        self.professional_sources = ProfessionalResearchService().collect(
+            [query], query, limit=min(limit, 6)
+        )
+        for item in self.professional_sources:
+            self._citation(item["title"], item["url"])
+        return self.professional_sources
+
     def tool_read_article(self, url: str, title: str = "") -> dict:
         self.pages += 1
         if self.pages > self.settings.max_web_pages:
@@ -437,7 +452,12 @@ class AgentService:
         )
         self.db.add(report)
         self.db.commit()
-        ReportService(self.db, self.run_id).create(report, question, ["html", "pdf", "png", "xlsx", "csv"])
+        ReportService(self.db, self.run_id).create(
+            report,
+            question,
+            ["html", "pdf", "png", "xlsx", "csv"],
+            professional_sources=self.professional_sources,
+        )
         self._event("artifact_ready", {"message": title, "report_id": report.id})
         return {"report_id": report.id, "status": report.status, "summary": report.summary}
 

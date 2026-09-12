@@ -163,6 +163,57 @@ def test_report_html_is_offline_and_has_no_demo_data():
     assert "+25%" in rendered
 
 
+def test_comparison_editorial_blocks_use_calculated_change_and_professional_context():
+    service = ReportService.__new__(ReportService)
+    service.models = SimpleNamespace(settings=SimpleNamespace(lieflat_dir=Path("missing")))
+    report = SimpleNamespace(title="Динамика прибыли", report_kind="comparison")
+    narrative = {
+        "summary": "Прибыль выросла.",
+        "highlights": [
+            {
+                "text": "Процентная динамика в фактах не указана.",
+                "fact_ids": ["fact-old", "fact-new"],
+            }
+        ],
+        "risks": ["Повтор значений из таблицы."],
+        "chart": {"template": "F6", "metric_codes": ["net_profit"]},
+        "professional_context": [
+            {"text": "Рейтинговое агентство отмечает устойчивый профиль.", "source_ids": ["P1"]}
+        ],
+        "professional_sources": [
+            {
+                "id": "P1",
+                "title": "Рейтинговый обзор",
+                "url": "https://raexpert.ru/example",
+                "publisher": "raexpert.ru",
+            }
+        ],
+    }
+    rendered = service._html(report, narrative, facts())
+    assert "вырос на +25%" in rendered
+    assert "Процентная динамика в фактах не указана" not in rendered
+    assert "Границы анализа" in rendered
+    assert "ПРОФЕССИОНАЛЬНЫЙ КОНТЕКСТ" in rendered
+    assert "Рейтинговый обзор" in rendered
+    assert "Источники и координаты · 3" in rendered
+
+
+def test_narrative_comparisons_are_deterministic():
+    calculated = ReportService._narrative_comparisons(facts())
+    assert calculated == [
+        {
+            "metric_code": "net_profit",
+            "label": "Чистая прибыль",
+            "previous_period": "2025-12-31",
+            "current_period": "2026-12-31",
+            "previous_display": "100 ₽",
+            "current_display": "125 ₽",
+            "change_display": "+25%",
+            "fact_ids": ["fact-old", "fact-new"],
+        }
+    ]
+
+
 def test_comparison_and_brief_use_vendored_report_skeletons():
     service = ReportService.__new__(ReportService)
     service.models = SimpleNamespace(settings=SimpleNamespace(lieflat_dir=Path("/opt/lieflat-charts")))

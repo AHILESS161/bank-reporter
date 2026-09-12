@@ -33,6 +33,8 @@ class SkillHost(Protocol):
 
     def tool_search_articles(self, query: str, limit: int = 20) -> Any: ...
 
+    def tool_search_professional_reports(self, query: str, limit: int = 4) -> Any: ...
+
     def tool_read_article(self, url: str, title: str = "") -> Any: ...
 
     def tool_list_documents(self, bank_reg_number: str | None = None) -> Any: ...
@@ -77,6 +79,11 @@ class DownloadDocumentInput(BaseModel):
 class SearchArticlesInput(BaseModel):
     query: str = Field(min_length=2, max_length=500)
     limit: int = Field(20, ge=1, le=30)
+
+
+class SearchProfessionalReportsInput(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+    limit: int = Field(4, ge=1, le=6)
 
 
 class ReadArticleInput(BaseModel):
@@ -196,6 +203,19 @@ SKILL_DEFINITIONS: tuple[tuple[SkillManifest, type[BaseModel], str], ...] = (
         ),
         SearchArticlesInput,
         "tool_search_articles",
+    ),
+    (
+        _manifest(
+            "search_professional_reports",
+            "Найти профессиональные обзоры",
+            "Найти публичные рейтинговые и отраслевые обзоры для контекста, не подменяя ими первичные банковские цифры.",
+            "research",
+            transport=SkillTransport.SERVICE,
+            permissions=["browser:search_read"],
+            timeout_seconds=180,
+        ),
+        SearchProfessionalReportsInput,
+        "tool_search_professional_reports",
     ),
     (
         _manifest(
