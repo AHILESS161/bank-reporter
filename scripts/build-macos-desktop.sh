@@ -3,12 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_DIR="$PROJECT_DIR/apps/desktop/.runtime"
-ARCH="${1:-arm64}"
-
-case "$ARCH" in
-  arm64|x64) ;;
-  *) echo "Architecture must be arm64 or x64" >&2; exit 2 ;;
-esac
+ARCH="arm64"
 
 cd "$PROJECT_DIR"
 rm -rf "$RUNTIME_DIR"
@@ -49,6 +44,6 @@ cp -R services/browser/node_modules "$RUNTIME_DIR/browser/node_modules"
 )
 cp -R third_party/lieflat-charts "$RUNTIME_DIR/lieflat-charts"
 
-echo "Building unsigned macOS DMG for $ARCH"
+echo "Building unsigned macOS DMG for Apple Silicon ($ARCH)"
 npm --prefix apps/desktop ci
 npm --prefix apps/desktop run dist -- --mac dmg "--$ARCH"

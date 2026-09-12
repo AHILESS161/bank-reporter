@@ -1,11 +1,11 @@
 # Bank Reporter Desktop для macOS
 
-Desktop-редакция предназначена для пользователя, которому не нужны Docker, Git, PostgreSQL и Redis. Она поставляется как обычный DMG отдельно для Apple Silicon и Intel.
+Desktop-редакция предназначена для пользователя с Mac на Apple Silicon, которому не нужны Docker, Git, PostgreSQL и Redis. Она поставляется как обычный ARM64 DMG.
 
 ## Установка готовой версии
 
 1. Откройте раздел **Releases** репозитория.
-2. Для Mac с M1/M2/M3/M4 и новее скачайте файл с `arm64` в названии. Для Intel Mac — файл с `x64`.
+2. Для Mac с M1/M2/M3/M4 и новее скачайте файл с `arm64` в названии.
 3. Откройте DMG и перетащите **Bank Reporter** в **Applications**.
 4. Первый раз откройте приложение правой кнопкой → **Открыть**. Текущая сборка не подписана сертификатом Apple Developer.
 5. Перейдите в **Настройки**, вставьте адрес API и ключ RouterAI, затем нажмите **Сохранить настройки** и **Проверить подключение**.
@@ -48,7 +48,7 @@ Desktop-редакция предназначена для пользовате�
 
 ## Автоматическая сборка DMG
 
-Workflow `.github/workflows/build-macos-desktop.yml` запускается вручную либо при теге `desktop-v*`. Он собирает отдельные DMG на нативных arm64 и x64 runners. При запуске по тегу оба файла автоматически добавляются в GitHub Release.
+Workflow `.github/workflows/build-macos-desktop.yml` запускается вручную либо при теге `desktop-v*`. Он собирает ARM64 DMG на нативном Apple Silicon runner. При запуске по тегу файл автоматически добавляется в GitHub Release.
 
 Пример выпуска:
 
@@ -60,7 +60,7 @@ git push origin desktop-v0.2.0
 Для локальной сборки на Mac нужны Node.js 24 и Python 3.12:
 
 ```bash
-bash scripts/build-macos-desktop.sh arm64
+bash scripts/build-macos-desktop.sh
 ```
 
 Результат появится в `apps/desktop/dist`.

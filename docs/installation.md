@@ -36,7 +36,7 @@
 
 ### Рекомендуемый вариант без Docker
 
-Скачайте готовый DMG из GitHub Releases: `arm64` для Apple Silicon либо `x64` для Intel. Установка, хранение данных, ограничения и выпуск сборок описаны в [руководстве Desktop для macOS](macos-desktop.md). Docker Desktop, Git и терминал конечному пользователю не нужны.
+Скачайте готовый `arm64` DMG из GitHub Releases. Desktop-редакция предназначена для Mac на Apple Silicon (M1/M2/M3/M4 и новее). Установка, хранение данных, ограничения и выпуск сборок описаны в [руководстве Desktop для macOS](macos-desktop.md). Docker Desktop, Git и терминал конечному пользователю не нужны.
 
 ### Запуск для человека без опыта работы с Docker
 

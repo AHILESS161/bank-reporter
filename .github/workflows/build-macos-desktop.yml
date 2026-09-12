@@ -11,15 +11,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,12 +30,12 @@ jobs:
           cache: pip
           cache-dependency-path: services/api/pyproject.toml
       - name: Build DMG
-        run: bash scripts/build-macos-desktop.sh "${{ matrix.arch }}"
+        run: bash scripts/build-macos-desktop.sh
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - uses: actions/upload-artifact@v4
         with:
-          name: Bank-Reporter-macOS-${{ matrix.arch }}
+          name: Bank-Reporter-macOS-arm64
           path: apps/desktop/dist/*.dmg
           if-no-files-found: error
           retention-days: 30

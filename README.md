@@ -56,7 +56,7 @@ docker compose up --build -d
 
 На macOS можно дважды открыть `scripts/start-macos.command`; при первом запуске сценарий поможет установить Docker Desktop и безопасно запросит ключ. Остановка без удаления данных — `scripts/stop-macos.command`.
 
-Для пользователя без Docker рекомендуется готовая Desktop-редакция: скачайте подходящий `arm64` или `x64` DMG из GitHub Releases, перенесите приложение в Applications и задайте ключ в разделе «Настройки». Подробности: [Bank Reporter Desktop для macOS](docs/macos-desktop.md).
+Для пользователя с Mac на Apple Silicon без Docker рекомендуется готовая Desktop-редакция: скачайте `arm64` DMG из GitHub Releases, перенесите приложение в Applications и задайте ключ в разделе «Настройки». Подробности: [Bank Reporter Desktop для macOS](docs/macos-desktop.md).
 
 ## Архитектура
 
