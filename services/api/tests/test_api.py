@@ -76,6 +76,22 @@ def test_report_delete_removes_database_record_and_artifacts(tmp_path, monkeypat
         assert not report_dir.exists()
 
 
+def test_report_can_be_rebuilt_in_place(monkeypatch):
+    queued: list[tuple] = []
+    monkeypatch.setattr("app.main.create_report_task.delay", lambda *args: queued.append(args))
+    with TestClient(app) as client, SessionLocal() as db:
+        report = Report(title="Динамика", report_kind="financial", document_ids=[], status="completed")
+        db.add(report)
+        db.commit()
+        report_id = report.id
+
+        response = client.post(f"/api/reports/{report_id}/rebuild")
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        assert queued[0][0] == report_id
+        assert "динамику" in queued[0][1]
+
+
 def test_pdf_document_is_listed_and_previewed_inline(tmp_path):
     pdf = tmp_path / "official-report.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%%EOF")

@@ -85,3 +85,22 @@ def test_trillion_values_fit_database_scale():
     assert result[0].value == "4900.0"
     assert result[0].unit_scale == 1_000_000_000
     assert result[0].period_end == "2025-12-31"
+
+
+def test_pdf_table_candidates_keep_year_columns_and_billions():
+    rows = [
+        ["в млрд руб.", "", "2025 г.", "2024 г."],
+        ["Чистая прибыль", "", "22,6", "20,9"],
+        ["Операционные расходы", "", "(35,6)", "(41,5)"],
+    ]
+    result = Extractor()._pdf_table_candidates(
+        rows,
+        "Пресс-релиз МСФО за 2025 год\n2025 г.\n2024 г.\nв млрд руб., если не указано иное",
+        page=1,
+    )
+    profit = [item for item in result if item.label == "Чистая прибыль"]
+    assert [(item.value, item.period_end) for item in profit] == [
+        ("22,6", "2025-12-31"),
+        ("20,9", "2024-12-31"),
+    ]
+    assert all(item.unit_scale == 1_000_000_000 for item in profit)

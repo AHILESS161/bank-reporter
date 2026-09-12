@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.services.lieflat import (
     LIEFLAT_COMMIT,
     chart_contract,
+    comparison_pairs,
     format_fact_value,
     report_contract,
     rung_chart,
@@ -74,8 +75,17 @@ def test_two_period_facts_use_real_f6_paired_rungs_contract():
     assert contract.candidates == ("F6", "F12", "F1")
     assert 'data-template="F6"' in rendered
     assert 'data-gallery="templates/basics-gallery.html"' in rendered
-    assert 'class="bar rung previous fade"' in rendered
-    assert 'class="bar rung current fade"' in rendered
+    assert 'class="bar rung previous"' in rendered
+    assert 'class="bar rung current"' in rendered
+    assert "2025" in rendered and "2026" in rendered
+    assert "ИЗМЕНЕНИЕ +25%" in rendered
+    assert comparison_pairs(facts()) == [(facts()[0], facts()[1])]
+
+
+def test_single_period_is_not_presented_as_dynamics():
+    contract = chart_contract([facts()[1]])
+    assert contract.chart_id == "F5"
+    assert comparison_pairs([facts()[1]]) == []
 
 
 def test_ratio_is_formatted_as_percent_even_if_source_currency_is_rub():
@@ -126,6 +136,9 @@ def test_report_html_is_offline_and_has_no_demo_data():
     assert 'data-template-source="templates/reports/report-04.zh.html"' in rendered
     assert "LIEFLAT 报告模板 04" in rendered
     assert "REAL TEMPLATE FROM BASICS-GALLERY.HTML" in rendered
+    assert 'class="comparison-table"' in rendered
+    assert "Предыдущий период" in rendered
+    assert "+25%" in rendered
 
 
 def test_comparison_and_brief_use_vendored_report_skeletons():

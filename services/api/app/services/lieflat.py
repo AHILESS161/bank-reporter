@@ -84,10 +84,7 @@ def template_styles(contract: TemplateContract, root: Path | None) -> str:
 
 
 def chart_contract(facts: list[dict]) -> ChartContract:
-    periods_by_metric: dict[str, set[str]] = {}
-    for item in facts:
-        periods_by_metric.setdefault(str(item.get("metric_code")), set()).add(str(item.get("period_end")))
-    if any(len(periods) >= 2 for periods in periods_by_metric.values()):
+    if comparison_pairs(facts):
         return ChartContract(
             "F6",
             "templates/basics-gallery.html",
@@ -150,86 +147,123 @@ def format_fact_value(item: dict) -> str:
     return f"{format_number(display_value)}{f' {suffix}' if suffix else ''}"
 
 
-def paired_rungs_chart(facts: list[dict]) -> str | None:
-    """F6 Paired Rungs using the gallery's two adjacent countable ladders."""
+def comparison_pairs(facts: list[dict], limit: int = 6) -> list[tuple[dict, dict]]:
+    """Return honest previous/current pairs, preferring two periods from one document."""
     grouped: dict[str, list[dict]] = {}
     for item in facts:
-        grouped.setdefault(str(item.get("metric_code") or item.get("label")), []).append(item)
-    pairs: list[tuple[dict, dict]] = []
-    for items in grouped.values():
+        if item.get("period_end"):
+            grouped.setdefault(str(item.get("metric_code") or item.get("label")), []).append(item)
+
+    def compatible(left: dict, right: dict) -> bool:
+        left_currency = str(left.get("currency") or "").upper().replace("RUR", "RUB")
+        right_currency = str(right.get("currency") or "").upper().replace("RUR", "RUB")
+        return left_currency == right_currency
+
+    def choose(items: list[dict]) -> tuple[dict, dict] | None:
         by_period: dict[str, dict] = {}
-        for item in sorted(items, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
-            by_period.setdefault(str(item.get("period_end") or ""), item)
-        ordered = sorted(by_period.values(), key=lambda fact: str(fact.get("period_end") or ""))
-        if len(ordered) >= 2:
-            pairs.append((ordered[-2], ordered[-1]))
-        if len(pairs) == 6:
+        confidence = {"high": 3, "medium": 2, "low": 1}
+        for item in sorted(
+            items,
+            key=lambda fact: (
+                str(fact.get("period_end") or ""),
+                confidence.get(str(fact.get("confidence") or "").lower(), 0),
+                bool(fact.get("page") or fact.get("sheet") or fact.get("cell_range")),
+            ),
+            reverse=True,
+        ):
+            by_period.setdefault(str(item.get("period_end")), item)
+        ordered = sorted(by_period.values(), key=lambda fact: str(fact.get("period_end")))
+        if len(ordered) < 2:
+            return None
+        previous, current = ordered[-2], ordered[-1]
+        return (previous, current) if compatible(previous, current) else None
+
+    output: list[tuple[dict, dict]] = []
+    for items in grouped.values():
+        by_document: dict[str, list[dict]] = {}
+        for item in items:
+            by_document.setdefault(str(item.get("document") or ""), []).append(item)
+        same_document = [pair for group in by_document.values() if (pair := choose(group))]
+        pair = max(same_document, key=lambda value: str(value[1].get("period_end"))) if same_document else choose(items)
+        if pair:
+            output.append(pair)
+        if len(output) == limit:
             break
+    return output
+
+
+def paired_rungs_chart(facts: list[dict]) -> str | None:
+    """F6 Paired Rungs with explicit values, periods and deterministic deltas."""
+    pairs = comparison_pairs(facts)
     if not pairs:
         return None
 
     def base_value(item: dict) -> Decimal:
-        return abs(Decimal(str(item["value"])) * Decimal(int(item.get("unit_scale") or 1)))
+        return Decimal(str(item["value"])) * Decimal(int(item.get("unit_scale") or 1))
 
-    indices = []
-    for previous, current in pairs:
-        previous_value = base_value(previous)
-        index = Decimal(100) if not previous_value else base_value(current) / previous_value * Decimal(100)
-        indices.append(index)
-    max_index = max([Decimal(110), *indices])
-    rung_unit = Decimal(5)
-    max_rungs = max(22, int((max_index / rung_unit).to_integral_value(rounding="ROUND_CEILING")))
-    step = min(Decimal("7.6"), Decimal(220) / Decimal(max_rungs))
-    base = Decimal(284)
+    def period_label(item: dict) -> str:
+        period = str(item.get("period_end") or "")
+        return period[:4] if period.endswith("-12-31") else period
+
+    height = 44 + len(pairs) * 104
     marks: list[str] = []
-    spacing = Decimal(680) / Decimal(len(pairs))
-    for index, ((previous, current), current_index) in enumerate(zip(pairs, indices, strict=True)):
-        center = Decimal(20) + spacing * (Decimal(index) + Decimal("0.5"))
-        previous_x, current_x = center - Decimal(14), center + Decimal(14)
-        previous_rungs = 20
-        current_rungs = max(1, int((current_index / rung_unit).to_integral_value()))
-        for rung in range(previous_rungs):
-            y = base - Decimal(rung) * step
-            width = Decimal("9.2") + Decimal((rung * 7 + index * 3) % 5) / Decimal(4)
-            marks.append(
-                f'<line x1="{previous_x - width}" y1="{y}" x2="{previous_x + width}" y2="{y}" '
-                f'class="bar rung previous fade" style="animation-delay:{index * .08 + rung * .01:.2f}s"/>'
-            )
-        for rung in range(current_rungs):
-            y = base - Decimal(rung) * step
-            width = Decimal("9.2") + Decimal((rung * 5 + index * 7) % 5) / Decimal(4)
-            marks.append(
-                f'<line x1="{current_x - width}" y1="{y}" x2="{current_x + width}" y2="{y}" '
-                f'class="bar rung current fade" style="animation-delay:{.15 + index * .08 + rung * .01:.2f}s"/>'
-            )
+    for index, (previous, current) in enumerate(pairs):
+        y = 32 + index * 104
+        previous_value, current_value = base_value(previous), base_value(current)
+        maximum = max(abs(previous_value), abs(current_value), Decimal(1))
+        previous_width = max(4, int(335 * abs(previous_value) / maximum))
+        current_width = max(4, int(335 * abs(current_value) / maximum))
         label = str(current.get("label") or current.get("metric_code") or "Показатель")
-        short_label = label if len(label) <= 17 else f"{label[:16]}…"
-        delta = current_index - Decimal(100)
-        delta_label = f"{format_number(delta)} п.п."
-        top = base - Decimal(current_rungs - 1) * step
+        short_label = label if len(label) <= 39 else f"{label[:38]}…"
+        metric = str(current.get("metric_code") or "").lower()
+        currency = str(current.get("currency") or "").upper()
+        if metric in PERCENT_METRICS or currency in {"%", "PERCENT"}:
+            delta = Decimal(str(current["value"])) - Decimal(str(previous["value"]))
+            delta_label = f"{format_number(delta.copy_abs())} п.п."
+            delta_class = "up" if delta > 0 else "down" if delta < 0 else "flat"
+            delta_prefix = "+" if delta > 0 else "−" if delta < 0 else ""
+        elif previous_value:
+            delta = (current_value - previous_value) / abs(previous_value) * Decimal(100)
+            delta_label = f"{format_number(delta.copy_abs().quantize(Decimal('0.1')))}%"
+            delta_class = "up" if delta > 0 else "down" if delta < 0 else "flat"
+            delta_prefix = "+" if delta > 0 else "−" if delta < 0 else ""
+        else:
+            delta_label, delta_class, delta_prefix = "н/д", "flat", ""
         marks.extend(
             [
-                f'<text x="{center}" y="{top - 15}" text-anchor="middle" class="value" '
-                f'data-fact-id="{escape(str(current["id"]))}">{escape(format_fact_value(current))}</text>',
-                f'<text x="{center}" y="{top - 3}" text-anchor="middle" class="delta">{escape(delta_label)}</text>',
-                f'<text x="{center}" y="{base + 22}" text-anchor="middle" class="label"><title>{escape(label)}</title>{escape(short_label)}</text>',
+                f'<text x="0" y="{y}" class="label"><title>{escape(label)}</title>{escape(short_label)}</text>',
+                f'<rect x="250" y="{y + 13}" width="335" height="12" rx="6" class="track"/>',
+                f'<rect x="250" y="{y + 13}" width="{previous_width}" height="12" rx="6" class="bar rung previous" data-fact-id="{escape(str(previous["id"]))}"/>',
+                f'<text x="600" y="{y + 23}" class="period">{escape(period_label(previous))}</text>',
+                f'<text x="720" y="{y + 23}" text-anchor="end" class="value">{escape(format_fact_value(previous))}</text>',
+                f'<rect x="250" y="{y + 42}" width="335" height="12" rx="6" class="track"/>',
+                f'<rect x="250" y="{y + 42}" width="{current_width}" height="12" rx="6" class="bar rung current" data-fact-id="{escape(str(current["id"]))}"/>',
+                f'<text x="600" y="{y + 52}" class="period current-period">{escape(period_label(current))}</text>',
+                f'<text x="720" y="{y + 52}" text-anchor="end" class="value current-value">{escape(format_fact_value(current))}</text>',
+                f'<text x="250" y="{y + 78}" class="delta {delta_class}">ИЗМЕНЕНИЕ {escape(delta_prefix + delta_label)}</text>',
+                f'<line x1="0" y1="{y + 91}" x2="720" y2="{y + 91}" class="baseline"/>',
             ]
         )
     return (
         '<svg class="lieflat-chart paired-rungs" data-template="F6" '
-        'data-gallery="templates/basics-gallery.html" viewBox="0 0 720 330" role="img" '
+        f'data-gallery="templates/basics-gallery.html" viewBox="0 0 720 {height}" role="img" '
         'aria-label="Сравнение финансовых показателей: предыдущий и текущий периоды">'
-        '<style>.paired-rungs text{font-family:Inter,system-ui,sans-serif;fill:var(--ink)}'
-        '.paired-rungs .rung{stroke-width:1.8}.paired-rungs .previous{stroke:var(--faint);opacity:.9}'
-        '.paired-rungs .current{stroke:var(--ink)}.paired-rungs .value{font-size:12px;font-weight:800}'
-        '.paired-rungs .delta{font-size:8px;fill:var(--muted);font-weight:700}'
-        '.paired-rungs .label{font-size:8px;fill:var(--muted);font-weight:700}'
+        '<style>.paired-rungs text{font-family:Inter,system-ui,sans-serif;fill:var(--ink,var(--txt,#17211d))}'
+        '.paired-rungs .previous{fill:var(--faint);opacity:.8}'
+        '.paired-rungs .current{fill:var(--accent,var(--data,var(--ink,#176b5b)))}'
+        '.paired-rungs .track{fill:var(--track,var(--quiet,var(--grid,#e9ece9)))}'
+        '.paired-rungs .value{font-size:11px;font-weight:700}'
+        '.paired-rungs .current-value{font-weight:850}.paired-rungs .period{font-size:9px;fill:var(--muted)}'
+        '.paired-rungs .period{fill:var(--muted,var(--mut,#66706b))}'
+        '.paired-rungs .current-period{fill:var(--accent,var(--data,var(--ink,#176b5b)));font-weight:800}'
+        '.paired-rungs .delta{font-size:9px;font-weight:800}'
+        '.paired-rungs .delta.up{fill:var(--accent,var(--data,var(--ink,#176b5b)))}'
+        '.paired-rungs .delta.down{fill:var(--danger,#a84c43)}'
+        '.paired-rungs .delta.flat{fill:var(--muted,var(--mut,#66706b))}'
+        '.paired-rungs .label{font-size:11px;font-weight:750}'
         '.paired-rungs .baseline{stroke:var(--grid);stroke-width:1}</style>'
         + "".join(marks)
-        + f'<line x1="18" y1="{base + 4}" x2="702" y2="{base + 4}" class="baseline"/>'
-        '<text x="360" y="326" text-anchor="middle" class="delta">'
-        'СВЕТЛОЕ = ПРЕДЫДУЩИЙ ПЕРИОД · ТЕМНОЕ = ТЕКУЩИЙ · ОДНА СТУПЕНЬ = 5 ПУНКТОВ ИНДЕКСА</text>'
-        '</svg>'
+        + '</svg>'
     )
 
 
@@ -289,10 +323,12 @@ def rung_chart(facts: list[dict], chart_id: str) -> str:
     return (
         f'<svg class="lieflat-chart" data-template="{escape(chart_id)}" viewBox="{viewbox}" role="img" '
         'aria-label="Проверяемые финансовые показатели"><style>'
-        ".lieflat-chart text{font:13px ui-sans-serif,system-ui,sans-serif;fill:var(--ink)}"
+        ".lieflat-chart text{font:13px ui-sans-serif,system-ui,sans-serif;fill:var(--ink,var(--txt,#17211d))}"
         ".lieflat-chart .label{font-weight:650}.lieflat-chart .value{font-size:14px;font-weight:800}"
-        ".lieflat-chart .period{font-size:9px;fill:var(--muted)}.lieflat-chart .track{fill:var(--track)}"
-        ".lieflat-chart .bar{fill:var(--accent)}.lieflat-chart .bar.negative{fill:var(--danger)}</style>"
+        ".lieflat-chart .period{font-size:9px;fill:var(--muted,var(--mut,#66706b))}"
+        ".lieflat-chart .track{fill:var(--track,var(--quiet,var(--grid,#e9ece9)))}"
+        ".lieflat-chart .bar{fill:var(--accent,var(--data,var(--ink,#176b5b)))}"
+        ".lieflat-chart .bar.negative{fill:var(--danger,#a84c43)}</style>"
         + "".join(marks)
         + "</svg>"
     )

@@ -547,6 +547,30 @@ def list_reports(db: Session = Depends(get_db)):
     return list(db.scalars(select(Report).order_by(Report.created_at.desc()).limit(200)).unique().all())
 
 
+@app.post("/api/reports/{report_id}/rebuild", response_model=ReportOut)
+def rebuild_report(report_id: str, db: Session = Depends(get_db)):
+    item = db.get(Report, report_id)
+    if not item:
+        raise HTTPException(404, "Report not found")
+    if item.status in {"queued", "processing"}:
+        raise HTTPException(409, "Отчет уже формируется")
+    output_formats = sorted({artifact.format for artifact in item.artifacts} | {"html"})
+    item.status = "queued"
+    db.commit()
+    try:
+        create_report_task.delay(
+            item.id,
+            "Пересобери финансовый анализ. Для каждого сопоставимого показателя явно покажи "
+            "предыдущий и текущий периоды, абсолютное значение и процентную динамику.",
+            output_formats,
+        )
+    except Exception as exc:
+        item.status = "failed"
+        item.summary = f"Очередь недоступна: {exc}"
+        db.commit()
+    return item
+
+
 @app.get("/api/reports/{report_id}", response_model=ReportOut)
 def get_report(report_id: str, db: Session = Depends(get_db)):
     item = db.get(Report, report_id)

@@ -97,12 +97,9 @@ class Extractor:
                         )
                         if formal_document and not self._primary_financial_page(page_texts[number - 1]):
                             continue
-                        for row in rows:
-                            if len(row) < 2 or not row[0]:
-                                continue
-                            for value in row[1:]:
-                                if self._decimal(value) is not None:
-                                    result.candidates.append(CellFact(row[0], value, page=number))
+                        result.candidates.extend(
+                            self._pdf_table_candidates(rows, page_texts[number - 1], number)
+                        )
         except Exception as exc:  # table extraction is best-effort
             result.warnings.append(f"Таблицы PDF не извлечены: {exc}")
         return result
@@ -215,35 +212,14 @@ class Extractor:
 
     def _financial_statement_candidates(self, text: str, page: int) -> list[CellFact]:
         """Read the common label / note / current / previous layout of bank PDF statements."""
-        lowered = text.casefold()
         if not self._primary_financial_page(text):
             return []
-        if "в миллионах" in lowered:
-            unit_scale = 1_000_000
-            value_multiplier = Decimal(1)
-        elif "в тысячах" in lowered:
-            unit_scale = 1_000
-            value_multiplier = Decimal(1)
-        elif "трлн" in lowered:
-            # unit_scale is a 32-bit database column; store trillions as thousands of billions.
-            unit_scale = 1_000_000_000
-            value_multiplier = Decimal(1_000)
-        elif "млрд" in lowered:
-            unit_scale = 1_000_000_000
-            value_multiplier = Decimal(1)
-        else:
+        unit_scale, value_multiplier = self._financial_units(text)
+        if unit_scale == 1:
             return []
 
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        years: list[int] = []
-        for line in lines[:40]:
-            year_match = re.search(r"\b(20\d{2})\b", line)
-            if year_match:
-                year = int(year_match.group(1))
-                if year not in years:
-                    years.append(year)
-            if len(years) == 2:
-                break
+        years = self._financial_years(text)
         if not years:
             return []
 
@@ -300,6 +276,81 @@ class Extractor:
                     )
                 )
         return output
+
+    def _pdf_table_candidates(
+        self, rows: list[list[str]], page_text: str, page: int
+    ) -> list[CellFact]:
+        """Preserve table column years and page units instead of creating unitless facts."""
+        years = self._financial_years(page_text)
+        unit_scale, value_multiplier = self._financial_units(page_text)
+        column_years: dict[int, int] = {}
+        for header in rows[:6]:
+            for column, cell in enumerate(header):
+                match = re.search(r"\b(20\d{2})\b", cell)
+                if match:
+                    column_years[column] = int(match.group(1))
+
+        output: list[CellFact] = []
+        for row in rows:
+            if len(row) < 2 or not row[0]:
+                continue
+            numeric = [
+                (column, value)
+                for column, value in enumerate(row[1:], start=1)
+                if self._decimal(value.rstrip("%")) is not None
+            ]
+            row_years = dict(column_years)
+            if not row_years and len(years) >= 2 and len(numeric) >= len(years):
+                row_years = {
+                    column: year
+                    for (column, _), year in zip(numeric[-len(years) :], years, strict=True)
+                }
+            for column, value in numeric:
+                if row_years and column not in row_years:
+                    continue
+                is_percent = value.endswith("%")
+                normalized_value = value
+                parsed_value = self._decimal(value.rstrip("%"))
+                if not is_percent and value_multiplier != 1 and parsed_value is not None:
+                    normalized_value = str(parsed_value * value_multiplier)
+                year = row_years.get(column)
+                output.append(
+                    CellFact(
+                        row[0],
+                        normalized_value,
+                        page=page,
+                        unit_scale=1 if is_percent else unit_scale,
+                        currency="%" if is_percent else "RUB",
+                        period_end=f"{year}-12-31" if year else None,
+                    )
+                )
+        return output
+
+    @staticmethod
+    def _financial_years(text: str) -> list[int]:
+        years: list[int] = []
+        for line in (line.strip() for line in text.splitlines()[:60]):
+            for match in re.finditer(r"\b(20\d{2})\b", line):
+                year = int(match.group(1))
+                if year not in years:
+                    years.append(year)
+                if len(years) == 2:
+                    return years
+        return years
+
+    @staticmethod
+    def _financial_units(text: str) -> tuple[int, Decimal]:
+        lowered = text.casefold()
+        if "в миллионах" in lowered or re.search(r"\bмлн\.?\s*(?:руб|₽)", lowered):
+            return 1_000_000, Decimal(1)
+        if "в тысячах" in lowered or re.search(r"\bтыс\.?\s*(?:руб|₽)", lowered):
+            return 1_000, Decimal(1)
+        if "трлн" in lowered:
+            # unit_scale is a 32-bit database column; store trillions as thousands of billions.
+            return 1_000_000_000, Decimal(1_000)
+        if "млрд" in lowered:
+            return 1_000_000_000, Decimal(1)
+        return 1, Decimal(1)
 
     @staticmethod
     def _primary_financial_page(text: str) -> bool:
