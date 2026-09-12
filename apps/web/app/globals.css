@@ -38,6 +38,10 @@ form { border-top:1px solid var(--line); padding:18px; display:flex; gap:12px; }
 .shell[data-theme="meow"] .brand .mark::before,.shell[data-theme="meow"] .brand .mark::after { content:""; position:absolute; top:-5px; width:12px; height:12px; border-radius:2px 9px 2px 2px; background:#d94b91; transform:rotate(-35deg); }
 .shell[data-theme="meow"] .brand .mark::before { left:5px; }.shell[data-theme="meow"] .brand .mark::after { right:5px; transform:scaleX(-1) rotate(-35deg); }
 .shell[data-theme="meow"] nav button { color:#70415a; }.shell[data-theme="meow"] nav button:hover,.shell[data-theme="meow"] nav button.active { background:linear-gradient(135deg,#c83f82,#8f2d62); color:white; box-shadow:0 8px 20px rgba(143,45,98,.18); }
+.theme-mascot { display:none; }
+.shell[data-theme="meow"] .theme-mascot { display:block; width:100%; max-width:182px; margin:auto auto 0; overflow:hidden; border:1px solid rgba(143,45,98,.18); border-radius:26px; background:#f8cade; box-shadow:0 14px 28px rgba(112,35,75,.16); pointer-events:none; transform:rotate(-1.5deg); }
+.shell[data-theme="meow"] .theme-mascot img { display:block; width:100%; height:184px; object-fit:cover; object-position:50% 30%; }
+.shell[data-theme="meow"] .sidebar-foot { margin-top:14px; }
 .shell[data-theme="meow"] .sidebar-foot::before { content:"₍^. .^₎⟆  ૮꒰ ˶• ༝ •˶꒱ა"; display:block; margin-bottom:12px; color:#8f2d62; font-size:17px; font-weight:800; letter-spacing:.02em; text-transform:none; white-space:nowrap; }
 .shell[data-theme="meow"] .pulse { background:#d84b91; box-shadow:0 0 0 4px #d84b9126; }
 .shell[data-theme="meow"] .workspace { position:relative; z-index:1; }.shell[data-theme="meow"] .workspace header h1::after { content:"  ♡ 🐇"; color:#d84b91; font-size:.48em; vertical-align:top; }
@@ -52,6 +56,8 @@ form { border-top:1px solid var(--line); padding:18px; display:flex; gap:12px; }
 .shell[data-theme="meow"] .workflow-library,.shell[data-theme="meow"] .workflow-canvas,.shell[data-theme="meow"] .skill-palette { border-color:#ecc5d7; background:#fffafd; }.shell[data-theme="meow"] .pipeline { background:linear-gradient(90deg,#f5dce7 1px,transparent 1px),linear-gradient(#f5dce7 1px,transparent 1px),#fff7fa; background-size:24px 24px; }.shell[data-theme="meow"] .pipeline-step article,.shell[data-theme="meow"] .skill-list article { border-color:#e9bfd2; background:#fffafd; box-shadow:0 10px 26px rgba(139,48,91,.09); }.shell[data-theme="meow"] .workflow-explainer,.shell[data-theme="meow"] .constructor-notice { background:#f9dfe9; color:#75324f; }
 .shell[data-theme="meow"] .preview-window { background:#f6dce8; }.shell[data-theme="meow"] .preview-toolbar { border-color:#ecc5d7; background:#fffafd; }
 
+@media (max-width:900px) { .theme-mascot { display:none !important; } }
 @media (max-width:700px) { .header-actions { align-items:flex-end; flex-direction:column; }.theme-toggle,.refresh { padding:8px 10px; }.shell[data-theme="meow"]::after { display:none; } }
-@media (prefers-reduced-motion:no-preference) { .shell[data-theme="meow"] .brand .mark { animation:meow-bob 4.5s ease-in-out infinite; } }
+@media (prefers-reduced-motion:no-preference) { .shell[data-theme="meow"] .brand .mark { animation:meow-bob 4.5s ease-in-out infinite; }.shell[data-theme="meow"] .theme-mascot { animation:mascot-peek 7s ease-in-out infinite; } }
 @keyframes meow-bob { 0%,90%,100% { transform:translateY(0) rotate(0); } 94% { transform:translateY(-2px) rotate(-2deg); } 97% { transform:translateY(-1px) rotate(2deg); } }
+@keyframes mascot-peek { 0%,88%,100% { transform:translateY(0) rotate(-1.5deg); } 93% { transform:translateY(-4px) rotate(1deg); } }

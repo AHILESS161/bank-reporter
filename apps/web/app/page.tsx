@@ -344,6 +344,7 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><div className="mark" aria-hidden="true">{appearance === "meow" ? "🐱" : "BR"}</div><div><strong>Bank Reporter</strong><small>{appearance === "meow" ? "пушистый корреспондент" : "корреспондент-агент"}</small></div></div>
         <nav>{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><span>{item.symbol}</span>{item.label}</button>)}</nav>
+        {appearance === "meow" && <div className="theme-mascot" aria-hidden="true"><img src="/cat-mascot.png" alt="" /></div>}
         <div className="sidebar-foot"><span className="pulse" /> локальный контур<small>{appearance === "meow" ? "Данные под защитой котиков и кроликов" : "Данные остаются на устройстве"}</small></div>
       </aside>
 
