@@ -77,11 +77,12 @@ class SkillRegistry:
     def execute(self, skill_id: str, arguments: dict[str, Any]) -> Any:
         return self.get(skill_id).execute(arguments)
 
-    def tool_specs(self) -> list[dict[str, Any]]:
+    def tool_specs(self, skill_ids: set[str] | None = None) -> list[dict[str, Any]]:
         return [
             item.manifest.as_openai_tool()
             for item in self._skills.values()
             if item.manifest.exposed_to_agent
+            and (skill_ids is None or item.manifest.id in skill_ids)
         ]
 
     def manifests(self) -> list[SkillManifest]:

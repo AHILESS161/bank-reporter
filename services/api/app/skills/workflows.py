@@ -110,6 +110,19 @@ DEFAULT_WORKFLOWS = (
                 optional=True,
                 note="Используется только для формы 101/102.",
             ),
+            WorkflowNode(
+                id="fallback_search",
+                skill_id="search_articles",
+                depends_on=["discover"],
+                optional=True,
+                note="Fallback, если официальный документ недоступен.",
+            ),
+            WorkflowNode(
+                id="fallback_read",
+                skill_id="read_article",
+                depends_on=["fallback_search"],
+                optional=True,
+            ),
         ],
     ),
     WorkflowManifest(
@@ -135,6 +148,18 @@ DEFAULT_WORKFLOWS = (
             WorkflowNode(id="download", skill_id="download_document", depends_on=["discover"], optional=True),
             WorkflowNode(id="facts", skill_id="query_financial_facts", depends_on=["library"]),
             WorkflowNode(id="document", skill_id="read_document", depends_on=["library"], optional=True),
+            WorkflowNode(
+                id="fallback_search",
+                skill_id="search_articles",
+                depends_on=["discover"],
+                optional=True,
+            ),
+            WorkflowNode(
+                id="fallback_read",
+                skill_id="read_article",
+                depends_on=["fallback_search"],
+                optional=True,
+            ),
             WorkflowNode(
                 id="report",
                 skill_id="create_report",

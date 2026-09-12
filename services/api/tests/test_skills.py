@@ -29,6 +29,11 @@ def test_skill_catalog_generates_tool_schemas_and_model_policy():
     assert report.model_policy.fallback == ORCHESTRATOR_MODEL
     tool = next(item for item in registry.tool_specs() if item["function"]["name"] == "resolve_bank")
     assert tool["function"]["parameters"]["required"] == ["query"]
+    restricted = registry.tool_specs({"resolve_bank", "list_documents"})
+    assert {item["function"]["name"] for item in restricted} == {
+        "resolve_bank",
+        "list_documents",
+    }
 
 
 def test_skill_runtime_validates_before_execution():

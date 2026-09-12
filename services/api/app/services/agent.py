@@ -91,6 +91,7 @@ class AgentService:
         workflow = self.workflows.route(
             latest_user_message, analysis_requested=self.analysis_requested
         )
+        active_skill_ids = {node.skill_id for node in self.workflows.ordered_nodes(workflow.id)}
         self._event(
             "status",
             {
@@ -111,7 +112,7 @@ class AgentService:
             if run.cancel_requested:
                 return self._complete(run, "Запрос отменен пользователем.", "cancelled")
             self._event("status", {"message": f"Шаг исследования {step + 1}/{self.settings.max_agent_steps}"})
-            response = self.models.chat(messages, self.skills.tool_specs())
+            response = self.models.chat(messages, self.skills.tool_specs(active_skill_ids))
             if not response.tool_calls:
                 return self._complete(run, response.content or "Работа завершена без текстового ответа.")
             assistant_message = {
