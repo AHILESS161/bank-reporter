@@ -178,6 +178,22 @@ export default function Home() {
     window.localStorage.removeItem(activeThreadStorageKey);
   }, []);
 
+  const deleteThreadItem = useCallback(async (thread: ThreadItem) => {
+    if (!window.confirm(`Удалить чат «${thread.title}» и все сообщения в нем?`)) return;
+    setDeletingId(thread.id); setError("");
+    try {
+      await api<void>(`/api/threads/${thread.id}`, { method: "DELETE" });
+      const remaining = await refreshThreads();
+      if (thread.id === threadId) {
+        const next = remaining[0];
+        if (next) await openThread(next.id);
+        else newThread();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось удалить чат");
+    } finally { setDeletingId(undefined); }
+  }, [newThread, openThread, refreshThreads, threadId]);
+
   useEffect(() => {
     void refresh();
     void (async () => {
@@ -303,7 +319,7 @@ export default function Home() {
           </div>
           <aside className="context">
             <div className="chat-history-head"><h3>Сохраненные чаты</h3><button disabled={busy} onClick={newThread}>+ Новый</button></div>
-            <div className="chat-history">{threads.length ? threads.map((thread) => <button key={thread.id} disabled={busy || threadLoading} className={thread.id === threadId ? "active" : ""} onClick={() => void openThread(thread.id)}><b>{thread.title}</b><small>{new Date(thread.updated_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</small></button>) : <p>История появится после первого запроса.</p>}</div>
+            <div className="chat-history">{threads.length ? threads.map((thread) => <div key={thread.id} className={`chat-history-item ${thread.id === threadId ? "active" : ""}`}><button className="chat-history-open" disabled={busy || threadLoading} onClick={() => void openThread(thread.id)}><b>{thread.title}</b><small>{new Date(thread.updated_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</small></button><button className="chat-history-delete" disabled={busy || threadLoading || deletingId === thread.id} title="Удалить чат" aria-label={`Удалить чат ${thread.title}`} onClick={() => void deleteThreadItem(thread)}>{deletingId === thread.id ? "…" : "Удалить"}</button></div>) : <p>История появится после первого запроса.</p>}</div>
             <h3>Быстрый старт</h3>{["Найди последнюю МСФО Сбера", "Что изменилось в ставке ЦБ?", "Статьи о качестве кредитов", "Сравни два отчетных периода"].map((q) => <button key={q} onClick={() => setPrompt(q)}>{q}</button>)}<h3>Состояние</h3><dl><div><dt>Документы</dt><dd>{documents.length}</dd></div><div><dt>Отчеты</dt><dd>{reports.length}</dd></div><div><dt>События</dt><dd>{calendar.length}</dd></div></dl>
           </aside>
         </div>}

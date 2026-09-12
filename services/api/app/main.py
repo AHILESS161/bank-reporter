@@ -150,6 +150,24 @@ def list_threads(db: Session = Depends(get_db)):
     return list(db.scalars(select(Thread).order_by(Thread.updated_at.desc()).limit(100)).all())
 
 
+@app.delete("/api/threads/{thread_id}")
+def delete_thread(thread_id: str, db: Session = Depends(get_db)):
+    item = db.get(Thread, thread_id)
+    if not item:
+        raise HTTPException(404, "Thread not found")
+    active_run = db.scalar(
+        select(AnalysisRun).where(
+            AnalysisRun.thread_id == thread_id,
+            AnalysisRun.status.in_({"queued", "running", "processing"}),
+        )
+    )
+    if active_run:
+        raise HTTPException(409, "Дождитесь завершения ответа агента")
+    db.delete(item)
+    db.commit()
+    return Response(status_code=204)
+
+
 @app.get("/api/threads/{thread_id}/messages", response_model=list[MessageOut])
 def thread_messages(thread_id: str, db: Session = Depends(get_db)):
     if not db.get(Thread, thread_id):

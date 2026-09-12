@@ -25,6 +25,9 @@ def test_health_and_thread():
         messages = client.get(f"/api/threads/{thread.json()['id']}/messages")
         assert messages.status_code == 200
         assert messages.json() == []
+        deleted = client.delete(f"/api/threads/{thread.json()['id']}")
+        assert deleted.status_code == 204
+        assert client.get(f"/api/threads/{thread.json()['id']}/messages").status_code == 404
 
 
 def test_report_preview_is_inline_and_sandboxed(tmp_path):
