@@ -26,6 +26,9 @@ class CellFact:
     page: int | None = None
     sheet: str | None = None
     cell_range: str | None = None
+    unit_scale: int = 1
+    currency: str | None = "RUB"
+    period_end: str | None = None
 
 
 @dataclass
@@ -63,6 +66,7 @@ class Extractor:
         result = ExtractionResult()
         doc = fitz.open(path)
         pages: list[str] = []
+        page_texts: list[str] = []
         for number, page in enumerate(doc, start=1):
             text = page.get_text("text").strip()
             if len(text) < 30:
@@ -71,7 +75,17 @@ class Extractor:
                 text = pytesseract.image_to_string(image, lang="rus+eng").strip()
                 result.warnings.append(f"OCR использован для страницы {number}")
             pages.append(f"\n--- PAGE {number} ---\n{text}")
-            result.candidates.extend(self._text_candidates(text, page=number))
+            page_texts.append(text)
+        formal_document = len(page_texts) > 10 or any(
+            marker in text.casefold()
+            for text in page_texts[:3]
+            for marker in ("финансовой отчетности", "финансовой отчётности", "пресс-релиз")
+        )
+        for number, text in enumerate(page_texts, start=1):
+            structured = self._financial_statement_candidates(text, page=number)
+            result.candidates.extend(structured)
+            if not formal_document and not structured:
+                result.candidates.extend(self._text_candidates(text, page=number))
         result.text = "".join(pages)
         try:
             with pdfplumber.open(path) as pdf:
@@ -81,6 +95,8 @@ class Extractor:
                         result.tables.append(
                             {"name": f"page_{number}_table_{index + 1}", "page": number, "rows": rows}
                         )
+                        if formal_document and not self._primary_financial_page(page_texts[number - 1]):
+                            continue
                         for row in rows:
                             if len(row) < 2 or not row[0]:
                                 continue
@@ -196,6 +212,108 @@ class Extractor:
             if match and self._decimal(match.group(2)) is not None:
                 candidates.append(CellFact(match.group(1).strip(" ."), match.group(2), page=page))
         return candidates[:2000]
+
+    def _financial_statement_candidates(self, text: str, page: int) -> list[CellFact]:
+        """Read the common label / note / current / previous layout of bank PDF statements."""
+        lowered = text.casefold()
+        if not self._primary_financial_page(text):
+            return []
+        if "в миллионах" in lowered:
+            unit_scale = 1_000_000
+            value_multiplier = Decimal(1)
+        elif "в тысячах" in lowered:
+            unit_scale = 1_000
+            value_multiplier = Decimal(1)
+        elif "трлн" in lowered:
+            # unit_scale is a 32-bit database column; store trillions as thousands of billions.
+            unit_scale = 1_000_000_000
+            value_multiplier = Decimal(1_000)
+        elif "млрд" in lowered:
+            unit_scale = 1_000_000_000
+            value_multiplier = Decimal(1)
+        else:
+            return []
+
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        years: list[int] = []
+        for line in lines[:40]:
+            year_match = re.search(r"\b(20\d{2})\b", line)
+            if year_match:
+                year = int(year_match.group(1))
+                if year not in years:
+                    years.append(year)
+            if len(years) == 2:
+                break
+        if not years:
+            return []
+
+        aliases = tuple(
+            alias
+            for values in (
+                ("всего активов", "совокупные активы", "итого активов", "total assets"),
+                ("всего капитала", "собственные средства", "total equity"),
+                ("чистая прибыль", "прибыль за год", "прибыль за период", "net profit"),
+                ("чистый процентный доход", "net interest income"),
+                ("чистые комиссионные доходы", "net fee"),
+                ("операционные расходы",),
+                ("кредиты клиентам", "loans to customers", "кредитный портфель"),
+                ("средства клиентов", "customer accounts", "customer funds"),
+                ("достаточность капитала", "н1.0", "capital adequacy"),
+                ("рентабельность активов", "return on assets", "roa"),
+                ("рентабельность капитала", "return on equity", "roe"),
+            )
+            for alias in values
+        )
+        output: list[CellFact] = []
+        for index, label in enumerate(lines):
+            label_lower = label.casefold()
+            if not any(alias in label_lower for alias in aliases):
+                continue
+            values: list[str] = []
+            for following in lines[index + 1 : index + 10]:
+                number = self._decimal(following.rstrip("%"))
+                if number is None:
+                    if values or any(alias in following.casefold() for alias in aliases):
+                        break
+                    continue
+                absolute = abs(number)
+                if 1900 <= absolute <= 2100:
+                    continue
+                if not values and number == number.to_integral_value() and 0 <= absolute <= 40:
+                    continue
+                values.append(following)
+                if len(values) >= len(years):
+                    break
+            for value_index, value in enumerate(values):
+                normalized_value = value
+                if not value.endswith("%") and value_multiplier != 1:
+                    parsed_value = self._decimal(value)
+                    normalized_value = str(parsed_value * value_multiplier) if parsed_value else value
+                output.append(
+                    CellFact(
+                        label=label,
+                        value=normalized_value,
+                        page=page,
+                        unit_scale=1 if value.endswith("%") else unit_scale,
+                        currency="%" if value.endswith("%") else "RUB",
+                        period_end=f"{years[min(value_index, len(years) - 1)]}-12-31",
+                    )
+                )
+        return output
+
+    @staticmethod
+    def _primary_financial_page(text: str) -> bool:
+        lowered = text.casefold()
+        return any(
+            marker in lowered
+            for marker in (
+                "консолидированный отчет о прибыли или убытке",
+                "консолидированный отчёт о прибыли или убытке",
+                "консолидированный отчет о финансовом положении",
+                "консолидированный отчёт о финансовом положении",
+                "пресс-релиз",
+            )
+        )
 
     @staticmethod
     def _decimal(value: str) -> Decimal | None:

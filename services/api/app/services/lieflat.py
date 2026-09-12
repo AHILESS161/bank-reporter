@@ -59,7 +59,7 @@ def select_chart(requested: str, facts: list[dict]) -> str:
     requested = requested if requested in SUPPORTED_CHARTS else "F1"
     values = [Decimal(str(item["value"])) for item in facts]
     periods_by_metric: dict[str, set[str]] = {}
-    for item in facts:
+    for item in sorted(facts, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
         periods_by_metric.setdefault(str(item.get("metric_code")), set()).add(str(item.get("period_end")))
     if any(value < 0 for value in values):
         return "F9"
@@ -86,22 +86,55 @@ def format_fact_value(item: dict) -> str:
     if metric in PERCENT_METRICS or currency in {"%", "PERCENT"}:
         return f"{format_number(value)}%"
     currency_label = {"RUB": "₽", "RUR": "₽", "USD": "$", "EUR": "€"}.get(currency, currency)
-    scale_label = {1_000: "тыс.", 1_000_000: "млн", 1_000_000_000: "млрд"}.get(scale, "")
+    absolute_base = abs(value * scale)
+    display_scale = scale
+    if currency_label and absolute_base >= Decimal("1000000000000"):
+        display_scale = 1_000_000_000_000
+    elif currency_label and absolute_base >= Decimal("1000000000"):
+        display_scale = 1_000_000_000
+    elif currency_label and absolute_base >= Decimal("1000000"):
+        display_scale = 1_000_000
+    elif currency_label and absolute_base >= Decimal("1000"):
+        display_scale = 1_000
+    display_value = value * Decimal(scale) / Decimal(display_scale)
+    scale_label = {
+        1_000: "тыс.",
+        1_000_000: "млн",
+        1_000_000_000: "млрд",
+        1_000_000_000_000: "трлн",
+    }.get(display_scale, "")
     suffix = " ".join(part for part in (scale_label, currency_label) if part)
-    return f"{format_number(value)}{f' {suffix}' if suffix else ''}"
+    return f"{format_number(display_value)}{f' {suffix}' if suffix else ''}"
 
 
 def rung_chart(facts: list[dict], chart_id: str) -> str:
     """Render a restrained Lieflat-compatible horizontal comparison chart."""
-    selected = facts[:8]
-    values = [abs(Decimal(str(item["value"]))) for item in selected]
+    selected: list[dict] = []
+    seen_metrics: set[str] = set()
+    for item in sorted(facts, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
+        metric = str(item.get("metric_code") or item.get("label"))
+        if metric in seen_metrics:
+            continue
+        selected.append(item)
+        seen_metrics.add(metric)
+        if len(selected) == 8:
+            break
+    def magnitude(item: dict) -> Decimal:
+        value = abs(Decimal(str(item["value"])))
+        metric = str(item.get("metric_code") or "").lower()
+        if metric in PERCENT_METRICS or str(item.get("currency") or "").upper() in {"%", "PERCENT"}:
+            return value
+        return value * Decimal(int(item.get("unit_scale") or 1))
+
+    values = [magnitude(item) for item in selected]
     maximum = max(values or [Decimal(1)]) or Decimal(1)
     height = max(140, len(selected) * 62 + 28)
     marks: list[str] = []
     for index, item in enumerate(selected):
         raw_value = Decimal(str(item["value"]))
-        magnitude = abs(raw_value)
-        bar_width = max(3, int(390 * magnitude / maximum)) if magnitude else 0
+        item_magnitude = magnitude(item)
+        ratio = float(item_magnitude / maximum) if item_magnitude else 0
+        bar_width = max(8, int(390 * ratio**0.5)) if item_magnitude else 0
         y = 22 + index * 62
         label = str(item.get("label") or item.get("metric_code") or "Показатель")
         short_label = label if len(label) <= 38 else f"{label[:37]}…"

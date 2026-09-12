@@ -8,6 +8,7 @@ from .db import SessionLocal, create_schema
 from .models import AnalysisRun, CalendarEvent, Report
 from .services.agent import AgentService
 from .services.calendar import CalendarService, upcoming
+from .services.documents import DocumentService
 from .services.reporting import ReportService
 from .services.telegram import TelegramNotifier
 
@@ -44,7 +45,21 @@ def create_report(report_id: str, question: str, output_formats: list[str]):
         report = db.get(Report, report_id)
         if not report:
             return None
-        return ReportService(db, report.analysis_run_id).create(report, question, output_formats).id
+        report.status = "processing"
+        db.commit()
+        try:
+            documents = DocumentService(db)
+            for document_id in report.document_ids:
+                documents.reprocess(document_id)
+            return ReportService(db, report.analysis_run_id).create(report, question, output_formats).id
+        except Exception as exc:
+            db.rollback()
+            report = db.get(Report, report_id)
+            if report:
+                report.status = "failed"
+                report.summary = f"Не удалось обработать исходный документ: {exc}"
+                db.commit()
+            raise
 
 
 @celery.task(name="calendar.sync")

@@ -56,7 +56,7 @@ def test_lieflat_contract_points_to_vendored_source():
 def test_rung_chart_uses_fact_provenance_and_honest_unit():
     rendered = rung_chart(facts(), "F1")
     assert 'data-template="F1"' in rendered
-    assert 'data-fact-id="fact-old"' in rendered
+    assert 'data-fact-id="fact-new"' in rendered
     assert "125 ₽" in rendered
     assert 'class="bar"' in rendered
 
@@ -65,6 +65,25 @@ def test_ratio_is_formatted_as_percent_even_if_source_currency_is_rub():
     assert format_fact_value(
         {"metric_code": "capital_adequacy_ratio", "value": "14.70000000", "currency": "RUB"}
     ) == "14,7%"
+
+
+def test_financial_value_is_presented_in_readable_scale():
+    assert format_fact_value(
+        {
+            "value": "4873717",
+            "unit_scale": 1_000_000,
+            "currency": "RUB",
+            "metric_code": "assets",
+        }
+    ) == "4,87 трлн ₽"
+    assert format_fact_value(
+        {
+            "value": "22.6",
+            "unit_scale": 1_000_000_000,
+            "currency": "RUB",
+            "metric_code": "net_profit",
+        }
+    ) == "22,6 млрд ₽"
 
 
 def test_report_html_is_offline_and_has_no_demo_data():

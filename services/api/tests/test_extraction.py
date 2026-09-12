@@ -49,3 +49,39 @@ def test_zip_bomb_limit_uses_uncompressed_size(tmp_path: Path):
             Extractor().extract(path)
     finally:
         settings.max_archive_mb = original
+
+
+def test_bank_statement_candidates_keep_period_and_scale():
+    text = """Обобщенный консолидированный отчет о финансовом положении
+в миллионах российских рублей
+2025
+2024
+Всего активов
+4 873 717
+5 008 951
+Кредиты клиентам
+12
+2 352 372
+2 697 626
+Всего капитала
+371 906
+349 301
+"""
+    result = Extractor()._financial_statement_candidates(text, page=7)
+    assets = [item for item in result if item.label == "Всего активов"]
+    loans = [item for item in result if item.label == "Кредиты клиентам"]
+    assert [(item.value, item.period_end) for item in assets] == [
+        ("4 873 717", "2025-12-31"),
+        ("5 008 951", "2024-12-31"),
+    ]
+    assert loans[0].value == "2 352 372"
+    assert all(item.unit_scale == 1_000_000 for item in assets + loans)
+
+
+def test_trillion_values_fit_database_scale():
+    result = Extractor()._financial_statement_candidates(
+        "Пресс-релиз за 2025 год\nтрлн ₽\nСовокупные активы\n4,9", page=1
+    )
+    assert result[0].value == "4900.0"
+    assert result[0].unit_scale == 1_000_000_000
+    assert result[0].period_end == "2025-12-31"

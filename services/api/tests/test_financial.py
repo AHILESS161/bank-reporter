@@ -10,11 +10,23 @@ def test_decimal_calculations_are_exact():
 
 
 def test_taxonomy_mapping_keeps_provenance_location():
-    result = map_candidates([{"label": "Чистая прибыль", "value": "1 250,50", "page": 7}])
+    result = map_candidates(
+        [
+            {
+                "label": "Чистая прибыль",
+                "value": "1 250,50",
+                "page": 7,
+                "unit_scale": 1_000_000,
+                "period_end": "2025-12-31",
+            }
+        ]
+    )
     assert len(result) == 1
     assert result[0].metric_code == "net_profit"
     assert result[0].value == Decimal("1250.50")
     assert result[0].location["page"] == 7
+    assert result[0].unit_scale == 1_000_000
+    assert str(result[0].period_end) == "2025-12-31"
 
 
 def test_taxonomy_prefers_specific_ratio_over_equity_substring():

@@ -96,14 +96,17 @@ async function render(payload) {
   const png = payload.png_path ? safeDataPath(payload.png_path) : null;
   await stat(html);
   const session = `render-${crypto.randomUUID()}`;
+  const localArgs = [
+    "--namespace", session, "--action-policy", path.resolve("action-policy.json"), "--allow-file-access",
+  ];
   try {
-    await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "--allow-file-access", "open", `file://${html}`]);
-    await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "wait", "1000"]);
-    if (pdf) await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "pdf", pdf]);
-    if (png) await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "screenshot", "--full", png]);
+    await run([...localArgs, "open", `file://${html}`]);
+    await run([...localArgs, "wait", "1000"]);
+    if (pdf) await run([...localArgs, "pdf", pdf]);
+    if (png) await run([...localArgs, "screenshot", "--full", png]);
     return { pdf, png };
   } finally {
-    await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "close"], 15_000).catch(() => undefined);
+    await run([...localArgs, "close"], 15_000).catch(() => undefined);
   }
 }
 

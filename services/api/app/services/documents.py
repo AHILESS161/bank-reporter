@@ -1,7 +1,7 @@
 import mimetypes
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -104,6 +104,27 @@ class DocumentService:
             temp, metadata.pop("title", safe_filename(url)), source_url=final_url, **metadata
         )
 
+    def reprocess(self, document_id: str) -> SourceDocument:
+        document = self.db.get(SourceDocument, document_id)
+        if not document or not document.versions:
+            raise ValueError("Документ не найден")
+        version = max(document.versions, key=lambda item: item.created_at)
+        path = Path(version.storage_path)
+        if not path.is_file():
+            raise ValueError("Оригинал документа отсутствует")
+        self.db.execute(delete(FinancialFact).where(FinancialFact.document_version_id == version.id))
+        self.db.execute(delete(ProvenanceRef).where(ProvenanceRef.document_version_id == version.id))
+        document.status = "processing"
+        self.db.flush()
+        result = self.extractor.extract(path)
+        version.extracted_text = result.text[:5_000_000]
+        version.parsed_data = result.json()
+        self._store_facts(document, version, result.json().get("candidates", []))
+        document.status = "parsed"
+        self.db.commit()
+        self.db.refresh(document)
+        return document
+
     def _store_facts(
         self, document: SourceDocument, version: DocumentVersion, candidates: list[dict]
     ) -> None:
@@ -127,6 +148,8 @@ class DocumentService:
                     label=item.label,
                     value=item.value,
                     confidence=item.confidence,
-                    currency="RUB",
+                    currency=item.currency,
+                    unit_scale=item.unit_scale,
+                    period_end=item.period_end,
                 )
             )

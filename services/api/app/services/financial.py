@@ -1,16 +1,18 @@
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from statistics import median
 
 
 TAXONOMY: dict[str, tuple[str, ...]] = {
-    "assets": ("активы", "total assets", "итого активов"),
-    "equity": ("капитал", "equity", "собственные средства"),
-    "net_profit": ("чистая прибыль", "net profit", "прибыль за период"),
+    "assets": ("всего активов", "совокупные активы", "total assets", "итого активов", "активы"),
+    "equity": ("всего капитала", "total equity", "собственные средства", "капитал"),
+    "net_profit": ("чистая прибыль", "net profit", "прибыль за период", "прибыль за год"),
     "net_interest_income": ("чистые процентные доходы", "net interest income"),
     "fee_income": ("чистые комиссионные доходы", "net fee", "commission income"),
-    "provisions": ("резерв", "credit loss", "обесценен"),
+    "operating_expenses": ("операционные расходы", "operating expenses"),
+    "provisions": ("создание резерва", "резервы под обесценение", "credit loss", "обесценен"),
     "loans": ("кредиты клиентам", "loans to customers", "кредитный портфель"),
     "customer_funds": ("средства клиентов", "customer accounts", "customer funds"),
     "npl": ("просроч", "non-performing", "npl"),
@@ -27,6 +29,9 @@ class MetricCandidate:
     value: Decimal
     confidence: str
     location: dict
+    unit_scale: int = 1
+    currency: str | None = "RUB"
+    period_end: date | None = None
 
 
 def parse_decimal(raw: str) -> Decimal | None:
@@ -45,7 +50,7 @@ def parse_decimal(raw: str) -> Decimal | None:
 
 def map_candidates(items: list[dict]) -> list[MetricCandidate]:
     mapped: list[MetricCandidate] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, date | None]] = set()
     for item in items:
         label = str(item.get("label", "")).strip()
         lowered = label.casefold()
@@ -61,7 +66,22 @@ def map_candidates(items: list[dict]) -> list[MetricCandidate]:
         if not matches:
             continue
         _, code = max(matches)
-        key = (code, str(value))
+        if value == value.to_integral_value() and Decimal(1990) <= abs(value) <= Decimal(2100):
+            continue
+        if (
+            code == "assets"
+            and re.match(r"^\d{1,3}\s", label)
+            and item.get("page") in {1, 2, 3}
+            and abs(value) <= 500
+        ):
+            continue
+        period_end = None
+        if item.get("period_end"):
+            try:
+                period_end = date.fromisoformat(str(item["period_end"]))
+            except ValueError:
+                period_end = None
+        key = (code, str(value), period_end)
         if key not in seen:
             mapped.append(
                 MetricCandidate(
@@ -69,7 +89,14 @@ def map_candidates(items: list[dict]) -> list[MetricCandidate]:
                     label,
                     value,
                     "medium",
-                    {k: v for k, v in item.items() if k not in {"label", "value"}},
+                    {
+                        k: v
+                        for k, v in item.items()
+                        if k not in {"label", "value", "unit_scale", "currency", "period_end"}
+                    },
+                    int(item.get("unit_scale") or 1),
+                    str(item.get("currency") or "RUB"),
+                    period_end,
                 )
             )
             seen.add(key)

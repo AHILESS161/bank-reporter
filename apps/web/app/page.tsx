@@ -57,11 +57,15 @@ function tableCells(line: string) {
 
 function isTableSeparator(line: string) {
   const cells = tableCells(line);
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.length > 1 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
 }
 
 function MarkdownMessage({ content }: { content: string }) {
-  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const lines = content
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/^\s*(#{1,4})([^#\s])/gm, "$1 $2")
+    .split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -198,7 +202,7 @@ export default function Home() {
           const content = String(item.payload.answer ?? "Готово.");
           const completedCitations = Array.isArray(item.payload.citations) ? item.payload.citations as Citation[] : runCitations;
           setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", content, citations: completedCitations }]);
-          setBusy(false); stream.close(); void refresh();
+          setBusy(false); setProgress([]); stream.close(); void refresh();
         }
         if (item.type === "failed") {
           setError(String(item.payload.error ?? "Задание завершилось с ошибкой"));

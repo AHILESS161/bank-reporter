@@ -553,6 +553,9 @@ class AgentService:
                     "отдельной кнопкой."
                 )
             }
+        documents = DocumentService(self.db)
+        for document_id in document_ids:
+            documents.reprocess(document_id)
         report = Report(
             title=title, report_kind=report_kind, document_ids=document_ids, analysis_run_id=self.run_id
         )
