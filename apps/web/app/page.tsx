@@ -7,7 +7,7 @@ type Citation = { message: string; url: string; document_id?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
 type RunEvent = { type: string; payload: Record<string, unknown> };
 type CalendarEvent = { id: string; title: string; starts_at: string; status: string; event_type: string; bank_name?: string; source_url?: string };
-type DocumentItem = { id: string; title: string; document_type: string; status: string; created_at: string; source_url?: string };
+type DocumentItem = { id: string; title: string; document_type: string; reporting_standard?: string; status: string; created_at: string; source_url?: string; source_tier: string; mime_type?: string; size_bytes?: number; previewable: boolean };
 type ReportItem = { id: string; title: string; report_kind: string; status: string; summary?: string; created_at: string; artifacts?: { id: string; format: string }[] };
 type WatchItem = { cbr_reg_number: string; bank_name: string; enabled: boolean };
 type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string };
@@ -123,6 +123,8 @@ export default function Home() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [previewReport, setPreviewReport] = useState<ReportItem>();
+  const [previewDocument, setPreviewDocument] = useState<DocumentItem>();
+  const [analysisDocumentId, setAnalysisDocumentId] = useState<string>();
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
 
@@ -140,6 +142,31 @@ export default function Home() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!reports.some((item) => ["queued", "processing"].includes(item.status))) return;
+    const timer = window.setTimeout(() => void refresh(), 3000);
+    return () => window.clearTimeout(timer);
+  }, [reports, refresh]);
+
+  const analyzeDocument = async (item: DocumentItem) => {
+    setError(""); setAnalysisDocumentId(item.id);
+    try {
+      await api<ReportItem>("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          title: `Анализ · ${item.title}`,
+          document_ids: [item.id],
+          report_kind: "financial",
+          question: "Проанализируй ключевые финансовые показатели, динамику доступных периодов, риски и ограничения. Каждое число свяжи с первоисточником.",
+          output_formats: ["html", "pdf", "png", "xlsx", "csv"],
+        }),
+      });
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось запустить анализ"); }
+    finally { setAnalysisDocumentId(undefined); }
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -210,7 +237,12 @@ export default function Home() {
 
         {tab === "library" && <Panel title="Оригиналы и извлеченные данные"><Upload onDone={refresh} /><div className="table">{documents.length ? documents.map((item) => <div className="row" key={item.id}><div className="file-icon">{item.document_type.slice(0, 3).toUpperCase()}</div><div><b>{item.title}</b><small>{new Date(item.created_at).toLocaleString("ru-RU")}</small></div><Status value={item.status} /><a href={`/api/documents/${item.id}/download`}>Скачать</a></div>) : <Empty text="Загрузите PDF/XLSX/CSV или попросите агента найти отчет." />}</div></Panel>}
 
-        {tab === "reports" && <Panel title="Готовые материалы"><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); return <article className="report-card" key={item.id}><p>REPORT / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview} onClick={() => setPreviewReport(item)}>Предпросмотр</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}</div></article>; }) : <Empty text="Отчеты создаются из чата или выбранных документов." />}</div>{previewReport && <ReportPreview report={previewReport} onClose={() => setPreviewReport(undefined)} />}</Panel>}
+        {tab === "reports" && <Panel title="Отчеты">
+          {error && <div className="error">{error}</div>}
+          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">ОРИГИНАЛЫ</p><h3>Найденные PDF-отчеты</h3></div><span>Анализ запускается только по вашему запросу</span></div><div className="cards">{documents.filter((item) => item.previewable).length ? documents.filter((item) => item.previewable).map((item) => <article className="report-card source-report-card" key={item.id}><p>PDF / {item.reporting_standard ?? item.document_type} / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3><span className="report-summary">Оригинал сохранен без изменений · {item.size_bytes ? formatBytes(item.size_bytes) : "размер уточняется"}</span><Status value={item.status} /><div className="report-actions"><button onClick={() => setPreviewDocument(item)}>Предпросмотр</button><button className="analyze-button" disabled={analysisDocumentId === item.id} onClick={() => void analyzeDocument(item)}>{analysisDocumentId === item.id ? "Запускаю…" : "Проанализировать"}</button><a href={`/api/documents/${item.id}/download`}>Скачать PDF</a></div>{item.source_url && <details className="card-source"><summary>Первоисточник</summary><a href={safeExternalUrl(item.source_url)} target="_blank" rel="noreferrer">Открыть официальный источник ↗</a></details>}</article>) : <Empty text="Попросите агента найти отчет или загрузите PDF в библиотеке." />}</div></section>
+          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">АНАЛИТИКА</p><h3>Подготовленные аналитические отчеты</h3></div><span>HTML-предпросмотр и выгрузки</span></div><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); return <article className="report-card" key={item.id}><p>ANALYSIS / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview} onClick={() => setPreviewReport(item)}>{item.status === "queued" || item.status === "processing" ? "Готовится…" : "Предпросмотр"}</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}</div></article>; }) : <Empty text="Выберите PDF выше и нажмите «Проанализировать» или попросите об анализе в чате." />}</div></section>
+          {previewReport && <ReportPreview report={previewReport} onClose={() => setPreviewReport(undefined)} />}{previewDocument && <DocumentPreview document={previewDocument} onClose={() => setPreviewDocument(undefined)} />}
+        </Panel>}
 
         {tab === "watchlist" && <Panel title="Банки под наблюдением"><BankSearch onAdded={refresh} /><div className="table">{watchlist.length ? watchlist.map((item) => <div className="row" key={item.cbr_reg_number}><div className="file-icon">{item.bank_name.slice(0, 2)}</div><div><b>{item.bank_name}</b><small>Рег. № {item.cbr_reg_number}</small></div><Status value={item.enabled ? "active" : "paused"} /></div>) : <Empty text="Найдите банк и включите наблюдение — поиск в чате работает и без подписки." />}</div></Panel>}
 
@@ -223,6 +255,17 @@ export default function Home() {
 function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) { return <section className="panel"><div className="panel-head"><h2>{title}</h2>{action}</div>{children}</section>; }
 function Empty({ text }: { text: string }) { return <div className="empty"><span>∅</span><p>{text}</p></div>; }
 function Setting({ title, text, state, stateOk }: { title: string; text: string; state?: string; stateOk?: boolean }) { return <article className="setting"><div className="setting-title"><p>{title}</p>{state && <span className={stateOk ? "config-ok" : "config-bad"}>{state}</span>}</div><span>{text}</span></article>; }
+
+function formatBytes(value: number) {
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} КБ`;
+  return `${(value / 1024 / 1024).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
+}
+
+function DocumentPreview({ document, onClose }: { document: DocumentItem; onClose: () => void }) {
+  return <div className="preview-backdrop" role="dialog" aria-modal="true" aria-label={`Предпросмотр: ${document.title}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="preview-window"><div className="preview-toolbar"><div><span>Оригинальный PDF</span><b>{document.title}</b></div><div><a href={`/api/documents/${document.id}/preview`} target="_blank" rel="noreferrer">Открыть отдельно ↗</a><a href={`/api/documents/${document.id}/download`}>Скачать</a><button onClick={onClose} aria-label="Закрыть предпросмотр">Закрыть</button></div></div><iframe src={`/api/documents/${document.id}/preview`} title={`PDF ${document.title}`} /></section>
+  </div>;
+}
 
 function ReportPreview({ report, onClose }: { report: ReportItem; onClose: () => void }) {
   return <div className="preview-backdrop" role="dialog" aria-modal="true" aria-label={`Предпросмотр: ${report.title}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>

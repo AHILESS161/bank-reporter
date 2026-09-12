@@ -292,9 +292,10 @@ def unwatch(reg_number: str, db: Session = Depends(get_db)):
 
 @app.get("/api/documents", response_model=list[DocumentOut])
 def list_documents(db: Session = Depends(get_db)):
-    return list(
-        db.scalars(select(SourceDocument).order_by(SourceDocument.created_at.desc()).limit(200)).all()
-    )
+    items = db.scalars(
+        select(SourceDocument).order_by(SourceDocument.created_at.desc()).limit(200)
+    ).all()
+    return [_document_out(item) for item in items]
 
 
 @app.post("/api/documents/upload", response_model=DocumentOut)
@@ -312,7 +313,8 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
                 raise HTTPException(413, "Файл превышает лимит")
             output.write(chunk)
     try:
-        return DocumentService(db).ingest_path(temp, file.filename or "Документ")
+        item = DocumentService(db).ingest_path(temp, file.filename or "Документ")
+        return _document_out(item)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -355,12 +357,47 @@ def _document_file(db: Session, document_id: str):
     return document, path, version.mime_type
 
 
+def _document_out(document: SourceDocument) -> DocumentOut:
+    version = max(document.versions, key=lambda item: item.created_at) if document.versions else None
+    mime_type = version.mime_type if version else None
+    return DocumentOut(
+        id=document.id,
+        title=document.title,
+        document_type=document.document_type,
+        reporting_standard=document.reporting_standard,
+        source_url=document.source_url,
+        source_tier=document.source_tier,
+        status=document.status,
+        mime_type=mime_type,
+        size_bytes=version.size_bytes if version else None,
+        previewable=mime_type == "application/pdf",
+        created_at=document.created_at,
+    )
+
+
 @app.get("/api/documents/{document_id}", response_model=DocumentOut)
 def get_document(document_id: str, db: Session = Depends(get_db)):
     item = db.get(SourceDocument, document_id)
     if not item:
         raise HTTPException(404, "Document not found")
-    return item
+    return _document_out(item)
+
+
+@app.get("/api/documents/{document_id}/preview")
+def preview_document(document_id: str, db: Session = Depends(get_db)):
+    _, path, mime = _document_file(db, document_id)
+    if mime != "application/pdf":
+        raise HTTPException(415, "Предпросмотр доступен только для PDF")
+    return FileResponse(
+        path,
+        media_type=mime,
+        headers={
+            "Content-Disposition": "inline",
+            "Content-Security-Policy": "frame-ancestors 'self'",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @app.get("/api/documents/{document_id}/download")

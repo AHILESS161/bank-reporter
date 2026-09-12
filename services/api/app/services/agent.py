@@ -158,7 +158,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_report",
-            "description": "Сформировать проверяемый финансовый отчет по документам",
+            "description": "Сформировать отдельный аналитический отчет по документам, только если пользователь явно попросил анализ, сравнение, графики или создание аналитического отчета",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -178,7 +178,25 @@ SYSTEM = """Ты Bank Reporter, агент российского банковс
 
 Если discover_documents не нашел нужный отчет, не останавливайся: выполни search_articles сначала с site:официальный-домен, затем по открытому вебу; прочитай релевантные HTML-публикации через read_article. Если сам отчет недоступен, собери подтверждаемые основные показатели из официального пресс-релиза и надежных деловых источников. Покажи их GFM-таблицей с колонками «Показатель», «Значение», «Период», «Источник/статус». Отдельно и явно отметь, что это не замена полному отчету. Если доступны загруженные документы, запроси query_financial_facts; если фактов мало — прочитай официальный документ через read_document и используй только числа с видимыми маркерами страниц. После успешного скачивания и чтения официального годового документа сформируй ответ сразу: не продолжай искать вторичные источники, если пользователь явно их не просил.
 
+Если пользователь просит только найти или скачать готовую отчетность, сохрани найденный оригинал и сообщи результат, но НЕ вызывай create_report и не создавай аналитический отчет автоматически. create_report разрешен только при явной просьбе проанализировать, сравнить, построить график или сформировать новый аналитический отчет. Найденный PDF пользователь сам откроет и при необходимости запустит его анализ в разделе «Отчеты».
+
 Ответ давай по-русски, аккуратным Markdown: короткий заголовок, итог, таблица и ограничения по необходимости. Не показывай имена инструментов, UUID и служебные рассуждения. Не печатай отдельный раздел со списком URL: интерфейс автоматически приложит использованные источники в сворачиваемом блоке. Не давай инвестиционных рекомендаций."""
+
+
+ANALYSIS_REQUEST_RE = re.compile(
+    r"(?:проанализ|аналитик|сравн|постро(?:й|ить).{0,30}(?:график|диаграмм)|"
+    r"(?:создай|сделай|сформируй).{0,40}(?:аналитическ\w*\s+)?отч[её]т)",
+    re.IGNORECASE | re.DOTALL,
+)
+ANALYSIS_NEGATION_RE = re.compile(
+    r"(?:без\s+(?:анализа|аналитики)|не\s+(?:анализируй|сравнивай|строй)|"
+    r"(?:анализ|аналитика)\s+не\s+(?:делай|нужен|нужна))",
+    re.IGNORECASE,
+)
+
+
+def requests_analysis(text: str) -> bool:
+    return not ANALYSIS_NEGATION_RE.search(text) and bool(ANALYSIS_REQUEST_RE.search(text))
 
 
 class AgentService:
@@ -189,6 +207,7 @@ class AgentService:
         self.models = ModelRouter(db, run_id)
         self.pages = 0
         self.sources: list[dict] = []
+        self.analysis_requested = False
 
     def execute(self) -> str:
         run = self.db.get(AnalysisRun, self.run_id)
@@ -202,6 +221,10 @@ class AgentService:
                 select(Message).where(Message.thread_id == run.thread_id).order_by(Message.created_at)
             ).all()
         )[-12:]
+        latest_user_message = next(
+            (item.content for item in reversed(thread_messages) if item.role == "user"), ""
+        )
+        self.analysis_requested = requests_analysis(latest_user_message)
         if not self.models.configured:
             answer = f"Агент пока не может обратиться к модели: {self.models.configuration_error}. После замены ключа перезапустите API и worker."
             return self._complete(run, answer)
@@ -522,6 +545,14 @@ class AgentService:
     def tool_create_report(
         self, document_ids: list[str], title: str, question: str, report_kind: str = "financial"
     ) -> dict:
+        if not self.analysis_requested:
+            return {
+                "error": (
+                    "Аналитический отчет не создан: пользователь просил только найти исходный "
+                    "документ. PDF уже сохранен в разделе «Отчеты» и может быть проанализирован "
+                    "отдельной кнопкой."
+                )
+            }
         report = Report(
             title=title, report_kind=report_kind, document_ids=document_ids, analysis_run_id=self.run_id
         )

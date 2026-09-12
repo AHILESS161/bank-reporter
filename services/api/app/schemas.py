@@ -69,6 +69,9 @@ class DocumentOut(ORMModel):
     source_url: str | None = None
     source_tier: str
     status: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    previewable: bool = False
     created_at: datetime
 
 
