@@ -19,25 +19,26 @@ class ModelRouter:
         self.analysis_run_id = analysis_run_id
         self.settings = get_settings()
         self.client = OpenAI(
-            api_key=self.settings.openrouter_api_key or "missing", base_url=self.settings.openrouter_base_url
+            api_key=self.settings.effective_model_api_key or "missing",
+            base_url=self.settings.effective_model_base_url,
         )
 
     @property
     def configured(self) -> bool:
-        key = self.settings.openrouter_api_key.strip()
+        key = self.settings.effective_model_api_key
         if not key:
             return False
-        if "openrouter.ai" in self.settings.openrouter_base_url:
+        if "openrouter.ai" in self.settings.effective_model_base_url:
             return key.startswith("sk-or-v1-")
         return True
 
     @property
     def configuration_error(self) -> str:
-        key = self.settings.openrouter_api_key.strip()
+        key = self.settings.effective_model_api_key
         if not key:
-            return "OPENROUTER_API_KEY не задан в корневом .env"
-        if "openrouter.ai" in self.settings.openrouter_base_url and not key.startswith("sk-or-v1-"):
-            return "В OPENROUTER_API_KEY указан ключ другого провайдера. Нужен ключ OpenRouter формата sk-or-v1-…"
+            return "MODEL_API_KEY не задан в корневом .env"
+        if "openrouter.ai" in self.settings.effective_model_base_url and not key.startswith("sk-or-v1-"):
+            return "Для выбранного адреса OpenRouter нужен ключ формата sk-or-v1-…"
         return ""
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, model: str | None = None):
@@ -51,14 +52,21 @@ class ModelRouter:
         self.db.add(record)
         self.db.commit()
         try:
+            request = {
+                "model": selected,
+                "messages": messages,
+                "tools": tools or None,
+                "tool_choice": "auto" if tools else None,
+                "temperature": 0.1,
+                "timeout": 120,
+            }
+            if self.settings.model_provider == "OpenRouter":
+                request["extra_headers"] = {
+                    "HTTP-Referer": self.settings.web_origin,
+                    "X-Title": "Bank Reporter",
+                }
             response = self.client.chat.completions.create(
-                model=selected,
-                messages=messages,
-                tools=tools or None,
-                tool_choice="auto" if tools else None,
-                temperature=0.1,
-                timeout=120,
-                extra_headers={"HTTP-Referer": self.settings.web_origin, "X-Title": "Bank Reporter"},
+                **request,
             )
             record.status = "completed"
             record.latency_ms = int((time.monotonic() - started) * 1000)
@@ -72,6 +80,10 @@ class ModelRouter:
             record.error = str(exc)[:2000]
             record.latency_ms = int((time.monotonic() - started) * 1000)
             self.db.commit()
+            if getattr(exc, "status_code", None) == 401:
+                raise ModelUnavailable(
+                    f"{self.settings.model_provider} отклонил API-ключ. Проверьте ключ и адрес API в .env."
+                ) from exc
             raise
 
     def finance_narrative(self, facts: list[dict], question: str) -> dict[str, Any]:
@@ -126,7 +138,7 @@ class ModelRouter:
     def _deterministic_narrative(facts: list[dict]) -> dict:
         first = facts[:5]
         return {
-            "summary": "Показатели извлечены и подготовлены к проверяемому анализу. Для модельной интерпретации задайте OPENROUTER_API_KEY.",
+            "summary": "Показатели извлечены и подготовлены к проверяемому анализу. Модельная интерпретация в этом запуске недоступна; ниже приведены проверяемые факты.",
             "highlights": [
                 {"text": f"{item['label']}: {item['value']}", "fact_ids": [item["id"]]} for item in first
             ],

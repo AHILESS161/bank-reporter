@@ -52,21 +52,27 @@ def map_candidates(items: list[dict]) -> list[MetricCandidate]:
         value = parse_decimal(str(item.get("value", "")))
         if value is None:
             continue
-        for code, aliases in TAXONOMY.items():
-            if any(alias in lowered for alias in aliases):
-                key = (code, str(value))
-                if key not in seen:
-                    mapped.append(
-                        MetricCandidate(
-                            code,
-                            label,
-                            value,
-                            "medium",
-                            {k: v for k, v in item.items() if k not in {"label", "value"}},
-                        )
-                    )
-                    seen.add(key)
-                break
+        matches = [
+            (len(alias), code)
+            for code, aliases in TAXONOMY.items()
+            for alias in aliases
+            if alias in lowered
+        ]
+        if not matches:
+            continue
+        _, code = max(matches)
+        key = (code, str(value))
+        if key not in seen:
+            mapped.append(
+                MetricCandidate(
+                    code,
+                    label,
+                    value,
+                    "medium",
+                    {k: v for k, v in item.items() if k not in {"label", "value"}},
+                )
+            )
+            seen.add(key)
     return mapped
 
 

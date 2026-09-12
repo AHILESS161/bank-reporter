@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     lieflat_dir: Path = Path("/opt/lieflat-charts")
 
+    model_api_key: str = ""
+    model_base_url: str = ""
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     orchestrator_model: str = "deepseek/deepseek-v4.1-flash"
@@ -38,6 +40,25 @@ class Settings(BaseSettings):
     @property
     def trusted_domains(self) -> set[str]:
         return {item.strip().lower() for item in self.trusted_media_domains.split(",") if item.strip()}
+
+    @property
+    def effective_model_api_key(self) -> str:
+        return (self.model_api_key or self.openrouter_api_key).strip()
+
+    @property
+    def effective_model_base_url(self) -> str:
+        return (self.model_base_url or self.openrouter_base_url).rstrip("/")
+
+    @property
+    def model_provider(self) -> str:
+        base_url = self.effective_model_base_url.lower()
+        if "routerai.ru" in base_url:
+            return "RouterAI"
+        if "openrouter.ai" in base_url:
+            return "OpenRouter"
+        if "api.deepseek.com" in base_url:
+            return "DeepSeek API"
+        return "OpenAI-compatible API"
 
 
 @lru_cache

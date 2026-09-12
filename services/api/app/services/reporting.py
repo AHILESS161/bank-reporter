@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..models import Artifact, DocumentVersion, FinancialFact, ProvenanceRef, Report, SourceDocument
 from .browser import BrowserClient
 from .financial import growth
-from .lieflat import LIEFLAT_COMMIT, report_contract, rung_chart, select_chart
+from .lieflat import LIEFLAT_COMMIT, format_fact_value, report_contract, rung_chart, select_chart
 from .model_router import ModelRouter, ModelUnavailable
 from .security import file_sha256
 from .storage import Storage
@@ -100,22 +100,65 @@ class ReportService:
         requested_chart = narrative.get("chart", {}).get("template", "F1")
         chart_id = select_chart(requested_chart, facts)
         chart = rung_chart(facts, chart_id)
+        fact_by_id = {str(item["id"]): item for item in facts}
+        source_number = {str(item["id"]): index for index, item in enumerate(facts, 1)}
+
+        def present_text(text: str, fact_ids: list[str]) -> str:
+            rendered = text
+            for fact_id in fact_ids:
+                fact = fact_by_id.get(str(fact_id))
+                if fact:
+                    rendered = rendered.replace(str(fact["value"]), format_fact_value(fact))
+            return rendered
+
+        def coordinate(item: dict) -> str:
+            if item.get("page"):
+                return f"страница {item['page']}"
+            if item.get("sheet"):
+                return f"лист {item['sheet']}"
+            if item.get("cell_range"):
+                return f"ячейка {item['cell_range']}"
+            return "координата источника не указана"
+
         highlights = "".join(
             f'<li data-provenance="{html.escape(",".join(item.get("fact_ids", [])))}">'
-            f"{html.escape(item.get('text', ''))}<sup>{', '.join(html.escape(x) for x in item.get('fact_ids', []))}</sup></li>"
+            f'<span>{html.escape(present_text(item.get("text", ""), item.get("fact_ids", [])))}</span>'
+            + "".join(
+                f'<a class="footnote" href="#source-{html.escape(str(fact_id))}">[{source_number.get(str(fact_id), "")}]</a>'
+                for fact_id in item.get("fact_ids", [])
+                if str(fact_id) in source_number
+            )
+            + "</li>"
             for item in narrative.get("highlights", [])
         )
         risks = "".join(f"<li>{html.escape(str(item))}</li>" for item in narrative.get("risks", []))
         sources = "".join(
-            f'<li id="fact-{html.escape(str(item["id"]))}"><a href="{html.escape(str(item.get("source_url") or "#"))}">'
-            f"{html.escape(item['document'])}</a> · {html.escape(str(item.get('page') or item.get('sheet') or item.get('cell_range') or 'источник'))} · факт {html.escape(str(item['id']))}</li>"
-            for item in facts
+            f'<li id="source-{html.escape(str(item["id"]))}"><span class="source-no">{index:02d}</span><div>'
+            f'<a href="{html.escape(str(item.get("source_url") or "#"))}" target="_blank" rel="noreferrer">{html.escape(item["document"])}</a>'
+            f'<small>{html.escape(coordinate(item))}</small>'
+            f'</div><code>{html.escape(str(item["id"]))}</code></li>'
+            for index, item in enumerate(facts, 1)
+        )
+        kpis = "".join(
+            f'<article><span>{html.escape(str(item.get("label") or item.get("metric_code")))}</span>'
+            f'<strong>{html.escape(format_fact_value(item))}</strong>'
+            f'<small>{html.escape(str(item.get("period_end") or "Период не указан"))}</small></article>'
+            for item in facts[:4]
         )
         width = "600px" if contract.report_id == "R11" else "1080px"
         return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{html.escape(report.title)}</title>
 <!-- Lieflat source: {contract.source_file} @ {LIEFLAT_COMMIT}; candidates: {", ".join(contract.candidates)}; {html.escape(contract.selection_reason)} -->
-<style>:root{{--bg:#F7F2EB;--ink:#081F5C;--muted:rgba(8,31,92,.60);--faint:rgba(8,31,92,.32);--grid:rgba(8,31,92,.16)}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,sans-serif;display:flex;justify-content:center;padding:40px 20px;font-variant-numeric:tabular-nums}}.sheet{{width:{width};max-width:100%;display:grid;grid-template-columns:92px 1fr}}.spine{{border-right:1px solid var(--ink);position:relative}}.spine b{{display:block;writing-mode:vertical-rl;font-size:34px;letter-spacing:.05em;padding:12px}}.content{{padding-left:36px}}header{{border-bottom:1px solid var(--ink);padding-bottom:22px}}.eyebrow,h2{{font-size:10px;letter-spacing:.15em;text-transform:uppercase}}h1{{font-size:44px;line-height:1;letter-spacing:-.04em}}.lead{{font-size:18px;line-height:1.45}}section{{margin-top:36px}}.grid{{display:grid;grid-template-columns:minmax(0,2fr) minmax(220px,1fr);gap:34px}}li{{margin:10px 0;line-height:1.45}}sup{{font-size:7px;color:var(--muted)}}a{{color:var(--ink)}}footer{{border-top:1px solid var(--ink);margin-top:42px;padding-top:12px;color:var(--muted);font-size:9px;letter-spacing:.07em}}@media(max-width:720px){{.sheet{{display:block}}.spine{{display:none}}.content{{padding:0}}.grid{{display:block}}}}@media print{{body{{padding:0}}}}</style></head>
-<body><main class="sheet" data-lieflat-report="{contract.report_id}" data-lieflat-chart="{chart_id}" data-lieflat-commit="{LIEFLAT_COMMIT}"><div class="spine"><b>{html.escape(report.title)}</b></div><div class="content"><header><p class="eyebrow">BANK REPORTER · {contract.report_id} · ПРОВЕРЯЕМЫЙ АНАЛИЗ</p><h1>{html.escape(report.title)}</h1><p class="lead">{html.escape(narrative["summary"])}</p></header><div class="grid"><section><h2>Показатели</h2>{chart if facts else "<p>Нормализованные показатели не найдены.</p>"}</section><aside><section><h2>Основные выводы</h2><ol>{highlights or "<li>Требуется ручная проверка извлечения.</li>"}</ol></section><section><h2>Ограничения</h2><ul>{risks}</ul></section></aside></div><section><h2>Источники и координаты</h2><ol>{sources or "<li>Источники не привязаны.</li>"}</ol></section><footer>Не является инвестиционной рекомендацией. Каждое число связано с ProvenanceRef. Lieflat Charts · PolyForm Noncommercial 1.0.0.</footer></div></main></body></html>'''
+<style>
+:root{{--page:#f4f1eb;--card:#fffdfa;--ink:#17211d;--muted:#66706b;--line:#dce0dc;--accent:#176b5b;--accent-soft:#dfeee9;--track:#e9ece9;--danger:#a84c43}}
+*{{box-sizing:border-box}}html{{background:var(--page)}}body{{margin:0;background:var(--page);color:var(--ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;padding:34px 20px}}a{{color:var(--accent)}}.sheet{{width:{width};max-width:100%;margin:auto;background:var(--card);border:1px solid var(--line);border-radius:24px;box-shadow:0 18px 55px rgba(23,33,29,.07);overflow:hidden}}.hero{{padding:44px 48px 38px;background:linear-gradient(135deg,#fdfcf9 0%,#edf5f1 100%);border-bottom:1px solid var(--line)}}.hero-top{{display:flex;align-items:center;justify-content:space-between;gap:20px}}.eyebrow,.section-label{{margin:0;font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--accent)}}.verified{{padding:7px 10px;border:1px solid #b8d7cd;border-radius:99px;background:#eef8f4;color:var(--accent);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}}h1{{max-width:780px;margin:28px 0 18px;font-size:48px;line-height:1.02;letter-spacing:-.045em}}.lead{{max-width:850px;margin:0;color:#3e4a45;font-size:18px;line-height:1.55}}.content{{padding:34px 48px 42px}}.kpis{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:34px}}.kpis article{{min-width:0;padding:17px 18px;border:1px solid var(--line);border-radius:14px;background:#fbfbf8}}.kpis span,.kpis small{{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.kpis strong{{display:block;margin:12px 0 8px;font-size:19px;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.analysis-grid{{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(270px,.8fr);gap:24px;align-items:start}}.chart-card,.insight-card{{border:1px solid var(--line);border-radius:18px;background:#fff;padding:24px}}.chart-card h2,.insight-card h2{{margin:7px 0 22px;font-size:21px;letter-spacing:-.025em}}.lieflat-chart{{display:block;width:100%;height:auto}}.insight-card ol,.insight-card ul{{margin:0;padding-left:20px}}.insight-card li{{padding:0 0 14px 3px;line-height:1.5;font-size:14px}}.insight-card li:last-child{{padding-bottom:0}}.limitations{{margin-top:24px;padding-top:22px;border-top:1px solid var(--line)}}.footnote{{margin-left:4px;text-decoration:none;font-size:9px;vertical-align:super}}.sources{{margin-top:28px;border:1px solid var(--line);border-radius:16px;background:#f8f8f5;overflow:hidden}}.sources summary{{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:17px 20px;cursor:pointer;list-style:none;font-size:13px;font-weight:800}}.sources summary::-webkit-details-marker{{display:none}}.sources summary:after{{content:"＋";font-size:17px;color:var(--accent)}}.sources[open] summary:after{{content:"−"}}.sources summary strong{{margin-left:auto;color:var(--muted);font-size:10px;font-weight:600}}.source-list{{margin:0;padding:0 20px 14px;list-style:none;border-top:1px solid var(--line)}}.source-list li{{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:12px;align-items:start;padding:14px 0;border-bottom:1px solid var(--line)}}.source-list li:last-child{{border-bottom:0}}.source-no{{color:var(--accent);font-size:10px;font-weight:800}}.source-list a{{font-size:12px;font-weight:700}}.source-list small{{display:block;margin-top:5px;color:var(--muted);font-size:10px}}.source-list code{{max-width:150px;color:#88908c;font-size:8px;overflow:hidden;text-overflow:ellipsis}}footer{{display:flex;justify-content:space-between;gap:20px;margin-top:28px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:9px;line-height:1.5}}footer b{{color:var(--ink)}}
+@media(max-width:780px){{body{{padding:0}}.sheet{{border:0;border-radius:0}}.hero,.content{{padding:28px 22px}}h1{{font-size:36px}}.kpis{{grid-template-columns:1fr 1fr}}.analysis-grid{{grid-template-columns:1fr}}.source-list li{{grid-template-columns:25px 1fr}}.source-list code{{display:none}}}}
+@media print{{@page{{size:A4;margin:12mm}}body{{padding:0;background:white}}.sheet{{width:100%;border:0;border-radius:0;box-shadow:none}}.hero{{padding:12mm 10mm 9mm}}.content{{padding:8mm 10mm}}h1{{font-size:34px}}.sources{{break-before:page}}.sources>summary{{display:none}}.sources>.source-list{{display:block!important}}}}
+</style></head>
+<body><main class="sheet" data-lieflat-report="{contract.report_id}" data-lieflat-chart="{chart_id}" data-lieflat-commit="{LIEFLAT_COMMIT}">
+<header class="hero"><div class="hero-top"><p class="eyebrow">BANK REPORTER · {contract.report_id}</p><span class="verified">Проверяемый анализ</span></div><h1>{html.escape(report.title)}</h1><p class="lead">{html.escape(narrative["summary"])}</p></header>
+<div class="content">{f'<section class="kpis">{kpis}</section>' if kpis else ''}<div class="analysis-grid"><section class="chart-card"><p class="section-label">Финансовый профиль</p><h2>Ключевые показатели</h2>{chart if facts else '<p>Нормализованные показатели не найдены.</p>'}</section><aside class="insight-card"><p class="section-label">Редакционный вывод</p><h2>Что важно</h2><ol>{highlights or '<li>Требуется ручная проверка извлечения.</li>'}</ol><div class="limitations"><p class="section-label">Ограничения</p><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></div></aside></div>
+<details class="sources"><summary><span>Источники и координаты</span><strong>{len(facts)} записей</strong></summary><ol class="source-list">{sources or '<li>Источники не привязаны.</li>'}</ol></details>
+<footer><span><b>Bank Reporter</b><br>Не является инвестиционной рекомендацией.</span><span>Каждое число связано с ProvenanceRef.<br>Lieflat Charts · PolyForm Noncommercial 1.0.0.</span></footer></div></main></body></html>'''
 
     @staticmethod
     def _xlsx(path: Path, narrative: dict, facts: list[dict], calculations: list[dict]) -> None:
@@ -197,14 +240,20 @@ class ReportService:
             writer.writerows(facts)
 
     def _artifact(self, report: Report, fmt: str, mime: str, path: Path) -> None:
-        self.db.add(
-            Artifact(
-                report_id=report.id,
-                format=fmt,
-                mime_type=mime,
-                storage_path=str(path),
-                size_bytes=path.stat().st_size,
-                sha256=file_sha256(path),
+        artifact = self.db.scalar(
+            select(Artifact).where(
+                Artifact.report_id == report.id,
+                Artifact.format == fmt,
             )
         )
+        if artifact is None:
+            artifact = Artifact(
+                report_id=report.id,
+                format=fmt,
+            )
+            self.db.add(artifact)
+        artifact.mime_type = mime
+        artifact.storage_path = str(path)
+        artifact.size_bytes = path.stat().st_size
+        artifact.sha256 = file_sha256(path)
         self.db.flush()

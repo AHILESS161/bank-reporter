@@ -53,6 +53,7 @@ services:
     volumes:
       - artifacts:/data
       - ./third_party/lieflat-charts:/opt/lieflat-charts:ro
+      - ./certs:/usr/local/share/ca-certificates/local:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,6 +81,7 @@ services:
     volumes:
       - artifacts:/data
       - ./third_party/lieflat-charts:/opt/lieflat-charts:ro
+      - ./certs:/usr/local/share/ca-certificates/local:ro
     depends_on:
       api:
         condition: service_healthy
@@ -97,6 +99,7 @@ services:
       DATA_DIR: /data
     volumes:
       - artifacts:/data
+      - ./certs:/usr/local/share/ca-certificates/local:ro
     depends_on:
       api:
         condition: service_healthy

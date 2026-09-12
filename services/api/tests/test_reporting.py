@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.lieflat import LIEFLAT_COMMIT, report_contract, rung_chart
+from app.services.lieflat import LIEFLAT_COMMIT, format_fact_value, report_contract, rung_chart
 from app.services.reporting import ReportService
 
 
@@ -57,7 +57,14 @@ def test_rung_chart_uses_fact_provenance_and_honest_unit():
     rendered = rung_chart(facts(), "F1")
     assert 'data-template="F1"' in rendered
     assert 'data-fact-id="fact-old"' in rendered
-    assert "ОДНА СТУПЕНЬ" in rendered
+    assert "125 ₽" in rendered
+    assert 'class="bar"' in rendered
+
+
+def test_ratio_is_formatted_as_percent_even_if_source_currency_is_rub():
+    assert format_fact_value(
+        {"metric_code": "capital_adequacy_ratio", "value": "14.70000000", "currency": "RUB"}
+    ) == "14,7%"
 
 
 def test_report_html_is_offline_and_has_no_demo_data():
@@ -78,6 +85,8 @@ def test_report_html_is_offline_and_has_no_demo_data():
     assert "yoursite.com" not in rendered
     assert "fact-old" in rendered and "fact-new" in rendered
     assert "Не является инвестиционной рекомендацией" in rendered
+    assert '<details class="sources">' in rendered
+    assert "125 ₽" in rendered
 
 
 def test_decimal_calculations_feed_xlsx():

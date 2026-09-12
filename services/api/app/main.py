@@ -82,23 +82,45 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    key = settings.openrouter_api_key.strip()
+    key = settings.effective_model_api_key
     configured = bool(key) and (
-        "openrouter.ai" not in settings.openrouter_base_url or key.startswith("sk-or-v1-")
+        "openrouter.ai" not in settings.effective_model_base_url or key.startswith("sk-or-v1-")
     )
-    return {"status": "ok", "openrouter_configured": configured}
+    openrouter_configured = bool(settings.openrouter_api_key) and settings.openrouter_api_key.startswith(
+        "sk-or-v1-"
+    )
+    return {
+        "status": "ok",
+        "model_configured": configured,
+        "openrouter_configured": openrouter_configured,
+    }
 
 
 @app.get("/api/settings/status")
 def settings_status():
     """Return only non-secret runtime configuration for the local UI."""
-    key = settings.openrouter_api_key.strip()
+    key = settings.effective_model_api_key
     format_valid = bool(key) and (
-        "openrouter.ai" not in settings.openrouter_base_url or key.startswith("sk-or-v1-")
+        "openrouter.ai" not in settings.effective_model_base_url or key.startswith("sk-or-v1-")
+    )
+    openrouter_configured = bool(settings.openrouter_api_key) and settings.openrouter_api_key.startswith(
+        "sk-or-v1-"
     )
     return {
-        "openrouter_configured": format_valid,
-        "openrouter_key_present": bool(key),
+        "model_configured": format_valid,
+        "model_key_present": bool(key),
+        "model_provider": settings.model_provider,
+        "model_error": (
+            ""
+            if format_valid
+            else (
+                "Для OpenRouter нужен ключ формата sk-or-v1-…"
+                if key and settings.model_provider == "OpenRouter"
+                else "Ключ модели не найден в корневом .env"
+            )
+        ),
+        "openrouter_configured": openrouter_configured,
+        "openrouter_key_present": bool(settings.openrouter_api_key),
         "openrouter_error": (
             ""
             if format_valid
@@ -466,6 +488,34 @@ def get_report(report_id: str, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(404, "Report not found")
     return item
+
+
+@app.get("/api/reports/{report_id}/preview")
+def preview_report(report_id: str, db: Session = Depends(get_db)):
+    report = db.get(Report, report_id)
+    if not report:
+        raise HTTPException(404, "Report not found")
+    artifact = db.scalar(
+        select(Artifact).where(Artifact.report_id == report_id, Artifact.format == "html")
+    )
+    if not artifact:
+        raise HTTPException(409, "HTML preview is not ready")
+    path = Path(artifact.storage_path)
+    if not path.exists():
+        raise HTTPException(410, "Preview file is missing")
+    return FileResponse(
+        path,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": "inline",
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                "font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+            ),
+            "X-Frame-Options": "SAMEORIGIN",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @app.get("/api/artifacts/{artifact_id}/download")

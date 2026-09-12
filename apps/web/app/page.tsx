@@ -7,9 +7,9 @@ type Message = { id: string; role: "user" | "assistant"; content: string; create
 type RunEvent = { type: string; payload: Record<string, unknown> };
 type CalendarEvent = { id: string; title: string; starts_at: string; status: string; event_type: string; bank_name?: string };
 type DocumentItem = { id: string; title: string; document_type: string; status: string; created_at: string; source_url?: string };
-type ReportItem = { id: string; title: string; status: string; created_at: string; artifacts?: { id: string; format: string }[] };
+type ReportItem = { id: string; title: string; report_kind: string; status: string; summary?: string; created_at: string; artifacts?: { id: string; format: string }[] };
 type WatchItem = { cbr_reg_number: string; bank_name: string; enabled: boolean };
-type SystemStatus = { openrouter_configured: boolean; openrouter_key_present: boolean; openrouter_error: string; orchestrator_model: string; finance_model: string };
+type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string };
 
 const tabs: { id: Tab; label: string; symbol: string }[] = [
   { id: "chat", label: "Чат", symbol: "↗" },
@@ -43,6 +43,7 @@ export default function Home() {
   const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
+  const [previewReport, setPreviewReport] = useState<ReportItem>();
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
 
@@ -125,11 +126,11 @@ export default function Home() {
 
         {tab === "library" && <Panel title="Оригиналы и извлеченные данные"><Upload onDone={refresh} /><div className="table">{documents.length ? documents.map((item) => <div className="row" key={item.id}><div className="file-icon">{item.document_type.slice(0, 3).toUpperCase()}</div><div><b>{item.title}</b><small>{new Date(item.created_at).toLocaleString("ru-RU")}</small></div><Status value={item.status} /><a href={`/api/documents/${item.id}/download`}>Скачать</a></div>) : <Empty text="Загрузите PDF/XLSX/CSV или попросите агента найти отчет." />}</div></Panel>}
 
-        {tab === "reports" && <Panel title="Готовые материалы"><div className="cards">{reports.length ? reports.map((item) => <article className="report-card" key={item.id}><p>REPORT / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3><Status value={item.status} /><div>{item.artifacts?.map((a) => <a key={a.id} href={`/api/artifacts/${a.id}/download`}>{a.format.toUpperCase()}</a>)}</div></article>) : <Empty text="Отчеты создаются из чата или выбранных документов." />}</div></Panel>}
+        {tab === "reports" && <Panel title="Готовые материалы"><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); return <article className="report-card" key={item.id}><p>REPORT / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview} onClick={() => setPreviewReport(item)}>Предпросмотр</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}</div></article>; }) : <Empty text="Отчеты создаются из чата или выбранных документов." />}</div>{previewReport && <ReportPreview report={previewReport} onClose={() => setPreviewReport(undefined)} />}</Panel>}
 
         {tab === "watchlist" && <Panel title="Банки под наблюдением"><BankSearch onAdded={refresh} /><div className="table">{watchlist.length ? watchlist.map((item) => <div className="row" key={item.cbr_reg_number}><div className="file-icon">{item.bank_name.slice(0, 2)}</div><div><b>{item.bank_name}</b><small>Рег. № {item.cbr_reg_number}</small></div><Status value={item.enabled ? "active" : "paused"} /></div>) : <Empty text="Найдите банк и включите наблюдение — поиск в чате работает и без подписки." />}</div></Panel>}
 
-        {tab === "settings" && <Panel title="Настройки запуска"><div className="settings-grid"><Setting title="OpenRouter" state={systemStatus?.openrouter_configured ? "Подключен" : systemStatus?.openrouter_key_present ? "Неверный ключ" : "Не настроен"} stateOk={systemStatus?.openrouter_configured} text={systemStatus?.openrouter_error || `Основной агент — ${systemStatus?.orchestrator_model ?? "DeepSeek V4.1 Flash"}, финансовый — ${systemStatus?.finance_model ?? "Ling 3.0 Flash Fin"}. Ключ читается из корневого .env.`} /><Setting title="Telegram" text="Укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для дайджестов и срочных уведомлений." /><Setting title="Хранилище" text="Оригиналы и версии сохраняются в локальном Docker volume до ручного удаления." /><Setting title="Безопасность" text="Только публичный read-only веб, без входа, CAPTCHA, платежей и отправки форм." /></div></Panel>}
+        {tab === "settings" && <Panel title="Настройки запуска"><div className="settings-grid"><Setting title={systemStatus?.model_provider ?? "Провайдер моделей"} state={systemStatus?.model_configured ? "Настроен" : systemStatus?.model_key_present ? "Проверьте ключ" : "Не настроен"} stateOk={systemStatus?.model_configured} text={systemStatus?.model_error || `Основной агент — ${systemStatus?.orchestrator_model ?? "DeepSeek V4.1 Flash"}, финансовый — ${systemStatus?.finance_model ?? "Ling 3.0 Flash Fin"}. Ключ и адрес API читаются из корневого .env.`} /><Setting title="Telegram" text="Укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для дайджестов и срочных уведомлений." /><Setting title="Хранилище" text="Оригиналы и версии сохраняются в локальном Docker volume до ручного удаления." /><Setting title="Безопасность" text="Только публичный read-only веб, без входа, CAPTCHA, платежей и отправки форм." /></div></Panel>}
       </section>
     </main>
   );
@@ -138,6 +139,12 @@ export default function Home() {
 function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) { return <section className="panel"><div className="panel-head"><h2>{title}</h2>{action}</div>{children}</section>; }
 function Empty({ text }: { text: string }) { return <div className="empty"><span>∅</span><p>{text}</p></div>; }
 function Setting({ title, text, state, stateOk }: { title: string; text: string; state?: string; stateOk?: boolean }) { return <article className="setting"><div className="setting-title"><p>{title}</p>{state && <span className={stateOk ? "config-ok" : "config-bad"}>{state}</span>}</div><span>{text}</span></article>; }
+
+function ReportPreview({ report, onClose }: { report: ReportItem; onClose: () => void }) {
+  return <div className="preview-backdrop" role="dialog" aria-modal="true" aria-label={`Предпросмотр: ${report.title}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="preview-window"><div className="preview-toolbar"><div><span>Предпросмотр отчета</span><b>{report.title}</b></div><div><a href={`/api/reports/${report.id}/preview`} target="_blank" rel="noreferrer">Открыть отдельно ↗</a><button onClick={onClose} aria-label="Закрыть предпросмотр">Закрыть</button></div></div><iframe src={`/api/reports/${report.id}/preview`} title={`Отчет ${report.title}`} sandbox="allow-popups allow-popups-to-escape-sandbox" /></section>
+  </div>;
+}
 
 const monthFormatter = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" });
 const dayKeyFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" });
