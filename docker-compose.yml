@@ -1,0 +1,120 @@
+name: bank-reporter
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bank_reporter
+      POSTGRES_USER: bank_reporter
+      POSTGRES_PASSWORD: bank_reporter
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bank_reporter"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  browser:
+    build: ./services/browser
+    environment:
+      DATA_DIR: /data
+      PORT: 8787
+    volumes:
+      - artifacts:/data
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./services/api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://bank_reporter:bank_reporter@postgres:5432/bank_reporter
+      REDIS_URL: redis://redis:6379/0
+      BROWSER_SERVICE_URL: http://browser:8787
+      DATA_DIR: /data
+    volumes:
+      - artifacts:/data
+      - ./third_party/lieflat-charts:/opt/lieflat-charts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      browser:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build: ./services/api
+    command: ["celery", "-A", "app.celery_app:celery", "worker", "--loglevel=INFO", "--concurrency=2"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://bank_reporter:bank_reporter@postgres:5432/bank_reporter
+      REDIS_URL: redis://redis:6379/0
+      BROWSER_SERVICE_URL: http://browser:8787
+      DATA_DIR: /data
+    volumes:
+      - artifacts:/data
+      - ./third_party/lieflat-charts:/opt/lieflat-charts:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+  scheduler:
+    build: ./services/api
+    command: ["celery", "-A", "app.celery_app:celery", "beat", "--loglevel=INFO"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://bank_reporter:bank_reporter@postgres:5432/bank_reporter
+      REDIS_URL: redis://redis:6379/0
+      BROWSER_SERVICE_URL: http://browser:8787
+      DATA_DIR: /data
+    volumes:
+      - artifacts:/data
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        API_INTERNAL_URL: http://api:8000
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  artifacts:

@@ -1,0 +1,9 @@
+{
+  "name": "bank-reporter-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "agent-browser": "0.37.1"
+  }
+}

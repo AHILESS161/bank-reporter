@@ -1,0 +1,7 @@
+{
+  "default": "deny",
+  "allow": [
+    "launch", "read", "open", "navigate", "snapshot", "screenshot", "pdf",
+    "click", "fill", "type", "scroll", "scrollintoview", "wait", "close", "get"
+  ]
+}
