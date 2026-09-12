@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Bank Reporter — архитектура MVP",
+    "output": "bank-reporter.architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 690],
+    "views": [
+      {
+        "id": "chat-run",
+        "label": "Запрос агента",
+        "focus": ["user", "web", "api", "redis", "worker", "agent", "models"],
+        "note": "Путь сообщения от браузера до оркестрации и потокового результата."
+      },
+      {
+        "id": "research",
+        "label": "Поиск и загрузка",
+        "focus": ["agent", "browser", "sources", "storage", "postgres"],
+        "note": "Публичный read-only веб, оригиналы, извлечение фактов и provenance."
+      },
+      {
+        "id": "background",
+        "label": "Фоновые задачи",
+        "focus": ["scheduler", "redis", "worker", "postgres", "storage"],
+        "note": "Календарь, watchlist, Telegram и формирование артефактов."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Пользователь",
+      "sublabel": "Windows / macOS",
+      "pos": [30, 230],
+      "size": [145, 68]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "Next.js Web",
+      "sublabel": "React 19 · :3000",
+      "tag": "localhost only",
+      "pos": [240, 230],
+      "size": [150, 68]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI API",
+      "sublabel": "REST · SSE · :8000",
+      "pos": [470, 230],
+      "size": [165, 68]
+    },
+    {
+      "id": "redis",
+      "type": "messagebus",
+      "label": "Redis 7",
+      "sublabel": "broker · results",
+      "pos": [700, 230],
+      "size": [165, 68]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Celery Worker",
+      "sublabel": "агент · отчёты · OCR",
+      "pos": [930, 230],
+      "size": [165, 68]
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent Core",
+      "sublabel": "skills · workflows",
+      "tag": "12 steps / 15 min",
+      "pos": [1160, 230],
+      "size": [175, 68]
+    },
+    {
+      "id": "models",
+      "type": "cloud",
+      "label": "RouterAI / OpenRouter",
+      "sublabel": "DeepSeek · Ling",
+      "pos": [1160, 50],
+      "size": [175, 68]
+    },
+    {
+      "id": "browser",
+      "type": "security",
+      "label": "Browser Worker",
+      "sublabel": "Chromium · agent-browser",
+      "tag": "read-only policy",
+      "pos": [1160, 410],
+      "size": [175, 68]
+    },
+    {
+      "id": "sources",
+      "type": "external",
+      "label": "Публичные источники",
+      "sublabel": "ЦБ · Минфин · банки",
+      "pos": [1160, 590],
+      "size": [175, 68]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL 16",
+      "sublabel": "чаты · факты · журнал",
+      "pos": [470, 410],
+      "size": [165, 68]
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "Volume /data",
+      "sublabel": "документы · артефакты",
+      "pos": [930, 410],
+      "size": [165, 68]
+    },
+    {
+      "id": "scheduler",
+      "type": "backend",
+      "label": "Celery Beat",
+      "sublabel": "calendar · alerts",
+      "pos": [700, 50],
+      "size": [165, 68]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Локальный контур Docker Compose",
+      "wraps": ["web", "api", "redis", "worker", "agent", "browser", "postgres", "storage", "scheduler"],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "Единственный опубликованный порт · 127.0.0.1:3000",
+      "wraps": ["web"],
+      "pad": 12
+    }
+  ],
+  "connections": [
+    {"id": "user-web", "from": "user", "to": "web", "label": "HTTP · localhost:3000", "labelDy": 58, "variant": "emphasis"},
+    {"id": "web-api", "from": "web", "to": "api", "label": "REST + SSE", "labelDy": 58, "variant": "emphasis"},
+    {"id": "api-redis", "from": "api", "to": "redis", "label": "Celery enqueue", "labelDy": -28, "variant": "dashed"},
+    {"id": "redis-worker", "from": "redis", "to": "worker", "variant": "dashed"},
+    {"id": "worker-agent", "from": "worker", "to": "agent", "label": "in-process AgentService", "labelDy": 58, "variant": "emphasis"},
+    {"id": "api-postgres", "from": "api", "to": "postgres", "label": "metadata / chat", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [481, 312]},
+    {"id": "worker-postgres", "from": "worker", "to": "postgres", "label": "facts / events / logs", "fromSide": "bottom", "toSide": "right"},
+    {"id": "worker-storage", "from": "worker", "to": "storage", "fromSide": "bottom", "toSide": "top", "route": "straight"},
+    {"id": "scheduler-redis", "from": "scheduler", "to": "redis", "label": "beat schedules", "fromSide": "bottom", "toSide": "top", "route": "straight", "variant": "dashed", "labelAt": [855, 132]},
+    {"id": "agent-models", "from": "agent", "to": "models", "label": "tool calls + JSON", "fromSide": "top", "toSide": "bottom", "route": "straight", "labelDx": 78},
+    {"id": "agent-browser", "from": "agent", "to": "browser", "label": "safe search / read / render", "fromSide": "bottom", "toSide": "top", "route": "straight", "variant": "security", "labelAt": [1215, 312]},
+    {"id": "browser-sources", "from": "browser", "to": "sources", "label": "public HTTPS · read only", "fromSide": "bottom", "toSide": "top", "route": "straight", "variant": "security", "labelAt": [1215, 492]},
+    {"id": "browser-storage", "from": "browser", "to": "storage", "label": "PDF / PNG", "labelDy": -24}
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Проверяемые данные",
+      "items": ["Финансовые значения хранятся как Decimal", "Каждый факт связан с ProvenanceRef", "Версии оригиналов не перезаписываются"]
+    },
+    {
+      "dot": "violet",
+      "title": "Агентская логика",
+      "items": ["DeepSeek управляет workflow и tool calls", "Ling интерпретирует готовые факты", "Ошибка Ling переводит анализ на DeepSeek"]
+    },
+    {
+      "dot": "rose",
+      "title": "Границы доверия",
+      "items": ["Контент страниц всегда недоверенный", "Private / loopback / link-local URL запрещены", "Нет login, paywall, CAPTCHA и внешних write-действий"]
+    }
+  ]
+}

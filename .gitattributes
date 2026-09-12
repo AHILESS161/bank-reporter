@@ -1,3 +1,6 @@
 *.sh text eol=lf
 *.command text eol=lf
 services/api/docker-entrypoint.sh text eol=lf
+docs/bank-reporter.architecture*.html text eol=lf
+docs/bank-reporter.architecture*.json text eol=lf
+docs/bank-reporter.architecture*.png binary
