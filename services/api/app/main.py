@@ -5,14 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import get_settings
+from .config import get_settings, update_runtime_settings
 from .db import SessionLocal, create_schema, get_db
+from .local_runtime import dispatch_task, start_local_scheduler, stop_local_scheduler
 from .skills import build_skill_registry, build_workflow_registry
 from .skills.contracts import WorkflowManifest
 from .skills.workflows import WorkflowValidationError
@@ -40,6 +42,7 @@ from .schemas import (
     MessageOut,
     ReportCreate,
     ReportOut,
+    RuntimeSettingsUpdate,
     RunCreated,
     ThreadCreate,
     ThreadOut,
@@ -51,6 +54,8 @@ from .services.calendar import CalendarService
 from .services.cbr import CBRConnector
 from .services.documents import DocumentService
 from .services.storage import Storage
+from .services.model_router import ModelRouter, ModelUnavailable
+from .services.telegram import TelegramNotifier
 from .tasks import create_report as create_report_task
 from .tasks import run_agent, sync_calendar
 
@@ -65,10 +70,14 @@ async def lifespan(_: FastAPI):
     create_schema()
     if settings.environment != "test":
         try:
-            sync_calendar.delay()
+            dispatch_task(sync_calendar)
         except Exception:
             pass
-    yield
+    start_local_scheduler()
+    try:
+        yield
+    finally:
+        stop_local_scheduler()
 
 
 app = FastAPI(
@@ -210,7 +219,80 @@ def settings_status():
         ),
         "orchestrator_model": settings.orchestrator_model,
         "finance_model": settings.finance_model,
+        "model_base_url": settings.effective_model_base_url,
+        "telegram_configured": bool(settings.telegram_bot_token and settings.telegram_chat_id),
+        "telegram_token_present": bool(settings.telegram_bot_token),
+        "telegram_chat_id": settings.telegram_chat_id,
+        "trusted_media_domains": settings.trusted_media_domains,
+        "max_agent_steps": settings.max_agent_steps,
+        "max_web_pages": settings.max_web_pages,
+        "max_file_mb": settings.max_file_mb,
+        "max_archive_mb": settings.max_archive_mb,
     }
+
+
+@app.put("/api/settings")
+def save_settings(payload: RuntimeSettingsUpdate):
+    values = payload.model_dump(exclude_none=True)
+    clear_model = values.pop("clear_model_api_key", False)
+    clear_telegram = values.pop("clear_telegram_bot_token", False)
+    if clear_model:
+        values["model_api_key"] = ""
+    elif not values.get("model_api_key"):
+        values.pop("model_api_key", None)
+    if clear_telegram:
+        values["telegram_bot_token"] = ""
+    elif not values.get("telegram_bot_token"):
+        values.pop("telegram_bot_token", None)
+    if "model_base_url" in values:
+        base_url = str(values["model_base_url"]).strip().rstrip("/")
+        if not base_url.startswith(("https://", "http://")):
+            raise HTTPException(422, "Адрес API должен начинаться с https:// или http://")
+        values["model_base_url"] = base_url
+    if "telegram_chat_id" in values:
+        values["telegram_chat_id"] = str(values["telegram_chat_id"]).strip()
+    update_runtime_settings(values)
+    return settings_status()
+
+
+@app.post("/api/settings/model/test")
+def test_model_connection(db: Session = Depends(get_db)):
+    router = ModelRouter(db)
+    if not router.configured:
+        raise HTTPException(422, router.configuration_error)
+    try:
+        message = router.chat(
+            [
+                {"role": "system", "content": "Ответь одним словом: OK"},
+                {"role": "user", "content": "Проверка подключения"},
+            ]
+        )
+    except ModelUnavailable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Провайдер модели недоступен: {str(exc)[:500]}") from exc
+    return {"ok": True, "provider": settings.model_provider, "answer": message.content or "OK"}
+
+
+@app.post("/api/settings/telegram/discover")
+def discover_telegram_chat():
+    try:
+        return TelegramNotifier().discover_chat()
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/settings/telegram/test")
+def test_telegram():
+    notifier = TelegramNotifier()
+    if not notifier.configured:
+        raise HTTPException(422, "Сохраните токен бота и Chat ID")
+    try:
+        info = notifier.bot_info()
+        notifier.send("Bank Reporter: тестовое уведомление доставлено ✅")
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"ok": True, "bot": info.get("username", "Telegram bot")}
 
 
 @app.post("/api/threads", response_model=ThreadOut)
@@ -278,7 +360,7 @@ def send_message(
     db.add(run)
     db.commit()
     try:
-        run_agent.delay(run.id)
+        dispatch_task(run_agent, run.id)
     except Exception as exc:
         run.status = "failed"
         run.error = f"Очередь недоступна: {exc}"
@@ -447,7 +529,7 @@ def discover_documents(payload: DocumentDiscover, db: Session = Depends(get_db))
     )
     db.add(run)
     db.commit()
-    run_agent.delay(run.id)
+    dispatch_task(run_agent, run.id)
     return RunCreated(run_id=run.id)
 
 
@@ -582,7 +664,7 @@ def calendar_ics(db: Session = Depends(get_db)):
 @app.post("/api/calendar/sync")
 def trigger_calendar_sync():
     try:
-        task = sync_calendar.delay()
+        task = dispatch_task(sync_calendar)
         return {"task_id": task.id, "status": "queued"}
     except Exception as exc:
         raise HTTPException(503, f"Очередь недоступна: {exc}") from exc
@@ -611,7 +693,7 @@ def create_report(
     db.add(report)
     db.commit()
     try:
-        create_report_task.delay(report.id, payload.question, payload.output_formats)
+        dispatch_task(create_report_task, report.id, payload.question, payload.output_formats)
     except Exception as exc:
         report.status = "failed"
         report.summary = f"Очередь недоступна: {exc}"
@@ -635,7 +717,8 @@ def rebuild_report(report_id: str, db: Session = Depends(get_db)):
     item.status = "queued"
     db.commit()
     try:
-        create_report_task.delay(
+        dispatch_task(
+            create_report_task,
             item.id,
             "Пересобери финансовый анализ. Для каждого сопоставимого показателя явно покажи "
             "предыдущий и текущий периоды, абсолютное значение и процентную динамику.",

@@ -9,8 +9,10 @@ import net from "node:net";
 
 const exec = promisify(execFile);
 const port = Number(process.env.PORT ?? 8787);
+const host = process.env.HOST ?? "127.0.0.1";
 const dataDir = path.resolve(process.env.DATA_DIR ?? "/data");
 const binary = path.resolve("node_modules/.bin/agent-browser");
+const cli = path.resolve("node_modules/agent-browser/bin/agent-browser.js");
 
 function json(res, status, value) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -57,7 +59,9 @@ async function publicUrl(value) {
 }
 
 async function run(args, timeout = 120_000) {
-  const { stdout, stderr } = await exec(binary, args, { timeout, maxBuffer: 2_000_000, env: process.env });
+  const command = process.env.AGENT_BROWSER_NODE_PATH || binary;
+  const commandArgs = process.env.AGENT_BROWSER_NODE_PATH ? [cli, ...args] : args;
+  const { stdout, stderr } = await exec(command, commandArgs, { timeout, maxBuffer: 2_000_000, env: process.env });
   return { stdout, stderr };
 }
 
@@ -124,4 +128,4 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "0.0.0.0", () => process.stdout.write(`browser-service:${port}\n`));
+server.listen(port, host, () => process.stdout.write(`browser-service:${host}:${port}\n`));

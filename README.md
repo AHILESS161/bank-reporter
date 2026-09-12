@@ -17,6 +17,7 @@
 - DeepSeek для оркестрации, Ling для финансовой интерпретации и автоматический fallback;
 - хранение документов, отчётов и чатов в локальном контуре без телеметрии.
 - переключаемые темы: строгая деловая и розовая «Котики и кролики».
+- отдельная macOS Desktop-редакция в DMG без Docker, PostgreSQL и Redis.
 
 ## Быстрый запуск
 
@@ -54,6 +55,8 @@ docker compose up --build -d
 Откройте <http://localhost:3000>. Проверка API: <http://localhost:3000/api/docs>.
 
 На macOS можно дважды открыть `scripts/start-macos.command`; при первом запуске сценарий поможет установить Docker Desktop и безопасно запросит ключ. Остановка без удаления данных — `scripts/stop-macos.command`.
+
+Для пользователя без Docker рекомендуется готовая Desktop-редакция: скачайте подходящий `arm64` или `x64` DMG из GitHub Releases, перенесите приложение в Applications и задайте ключ в разделе «Настройки». Подробности: [Bank Reporter Desktop для macOS](docs/macos-desktop.md).
 
 ## Архитектура
 

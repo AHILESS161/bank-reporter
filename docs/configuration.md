@@ -1,6 +1,10 @@
 # Конфигурация
 
-Все секреты и локальные параметры задаются в корневом `.env`. Файл исключён из Git. После изменения переменных пересоздайте затронутые контейнеры:
+Для обычной настройки используйте раздел **Настройки** в интерфейсе. Там можно сохранить ключ модели, адрес OpenAI-совместимого API, Telegram-токен, Chat ID, приоритетные домены и лимиты агента. Изменения применяются без перезапуска. Секреты хранятся в `runtime-settings.json` локального каталога данных и никогда не возвращаются через API открытым текстом.
+
+Пустое поле ключа или токена означает «оставить сохраненное значение». В Docker-редакции runtime-настройки находятся в volume `/data`; в Desktop-редакции — в `~/Library/Application Support/Bank Reporter/data`.
+
+Переменные в корневом `.env` остаются альтернативой для администратора. Файл исключён из Git. После ручного изменения переменных пересоздайте затронутые контейнеры:
 
 ```bash
 docker compose up -d --force-recreate api worker scheduler
@@ -19,6 +23,7 @@ docker compose up -d --force-recreate api worker scheduler
 | `FINANCE_FALLBACK_MODEL` | `deepseek/deepseek-v4.1-flash` | fallback финансового шага |
 | `TELEGRAM_BOT_TOKEN` | пусто | токен BotFather; Telegram отключён без него |
 | `TELEGRAM_CHAT_ID` | пусто | получатель уведомлений |
+| `TASK_BACKEND` | `celery` | `celery` для Compose, `local` для Desktop |
 | `APP_TIMEZONE` | `Europe/Moscow` | расписания и представление времени |
 | `DATABASE_URL` | задаётся Compose | SQLAlchemy DSN PostgreSQL |
 | `REDIS_URL` | задаётся Compose | broker/result backend Celery |

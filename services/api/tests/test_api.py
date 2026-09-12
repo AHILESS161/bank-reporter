@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
+from app.config import get_settings
 from app.main import app
 from app.models import Artifact, DocumentVersion, Report, SourceDocument
 from app.services.cbr import CBRConnector
@@ -28,6 +29,42 @@ def test_health_and_thread():
         deleted = client.delete(f"/api/threads/{thread.json()['id']}")
         assert deleted.status_code == 204
         assert client.get(f"/api/threads/{thread.json()['id']}/messages").status_code == 404
+
+
+def test_settings_can_be_saved_without_returning_secrets(tmp_path):
+    settings = get_settings()
+    original = {
+        "data_dir": settings.data_dir,
+        "model_api_key": settings.model_api_key,
+        "model_base_url": settings.model_base_url,
+        "telegram_bot_token": settings.telegram_bot_token,
+        "telegram_chat_id": settings.telegram_chat_id,
+    }
+    settings.data_dir = tmp_path
+    try:
+        with TestClient(app) as client:
+            response = client.put(
+                "/api/settings",
+                json={
+                    "model_api_key": "router-secret",
+                    "model_base_url": "https://routerai.ru/api/v1/",
+                    "telegram_bot_token": "123:telegram-secret",
+                    "telegram_chat_id": "456",
+                },
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["model_key_present"] is True
+            assert body["telegram_configured"] is True
+            assert body["model_base_url"] == "https://routerai.ru/api/v1"
+            assert "router-secret" not in response.text
+            assert "telegram-secret" not in response.text
+            stored = (tmp_path / "runtime-settings.json").read_text(encoding="utf-8")
+            assert "router-secret" in stored
+            assert "telegram-secret" in stored
+    finally:
+        for key, value in original.items():
+            setattr(settings, key, value)
 
 
 def test_report_preview_is_inline_and_sandboxed(tmp_path):

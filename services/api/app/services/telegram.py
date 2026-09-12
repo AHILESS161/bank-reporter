@@ -17,21 +17,62 @@ class TelegramNotifier:
     def configured(self) -> bool:
         return bool(self.settings.telegram_bot_token and self.settings.telegram_chat_id)
 
+    @staticmethod
+    def _result(response: httpx.Response) -> dict:
+        try:
+            payload = response.json()
+        except ValueError:
+            response.raise_for_status()
+            raise ValueError("Telegram вернул непонятный ответ")
+        if not response.is_success or not payload.get("ok"):
+            raise ValueError(f"Telegram: {payload.get('description', 'ошибка подключения')}")
+        return payload
+
     def send(self, text: str, chat_id: str | None = None) -> bool:
-        if not self.configured:
+        target = chat_id or self.settings.telegram_chat_id
+        if not self.settings.telegram_bot_token or not target:
             return False
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
         response = httpx.post(
             url,
             json={
-                "chat_id": chat_id or self.settings.telegram_chat_id,
+                "chat_id": target,
                 "text": text,
                 "disable_web_page_preview": True,
             },
             timeout=20,
         )
-        response.raise_for_status()
+        self._result(response)
         return True
+
+    def bot_info(self) -> dict:
+        if not self.settings.telegram_bot_token:
+            raise ValueError("Сначала сохраните токен Telegram-бота")
+        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/getMe"
+        response = httpx.get(url, timeout=15)
+        payload = self._result(response)
+        return payload.get("result", {})
+
+    def discover_chat(self) -> dict:
+        """Return the most recent direct chat that contacted this bot."""
+        self.bot_info()
+        url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/getUpdates"
+        response = httpx.get(url, params={"timeout": 0, "limit": 100}, timeout=15)
+        updates = self._result(response).get("result", [])
+        for update in reversed(updates):
+            message = update.get("message") or update.get("channel_post") or {}
+            chat = message.get("chat") or {}
+            if chat.get("id") is None:
+                continue
+            title = chat.get("title") or " ".join(
+                part for part in (chat.get("first_name"), chat.get("last_name")) if part
+            )
+            return {
+                "chat_id": str(chat["id"]),
+                "title": title or chat.get("username") or "Telegram chat",
+                "type": chat.get("type", "unknown"),
+            }
+        raise ValueError("Сообщений не найдено. Откройте бота в Telegram, нажмите Start и повторите поиск")
 
     def digest(self, events: list[CalendarEvent]) -> bool:
         if not events:
@@ -98,6 +139,6 @@ class TelegramNotifier:
         if state is None:
             state = IntegrationState(key="telegram", value={})
             db.add(state)
-        state.value = {**state.value, "update_offset": offset}
+        state.value = {**(state.value or {}), "update_offset": offset}
         db.commit()
         return handled

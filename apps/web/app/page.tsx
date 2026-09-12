@@ -12,7 +12,7 @@ type CalendarEvent = { id: string; title: string; starts_at: string; status: str
 type DocumentItem = { id: string; title: string; document_type: string; reporting_standard?: string; status: string; created_at: string; source_url?: string; source_tier: string; mime_type?: string; size_bytes?: number; previewable: boolean };
 type ReportItem = { id: string; title: string; report_kind: string; status: string; summary?: string; created_at: string; artifacts?: { id: string; format: string }[] };
 type WatchItem = { cbr_reg_number: string; bank_name: string; enabled: boolean };
-type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string };
+type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string; model_base_url: string; telegram_configured: boolean; telegram_token_present: boolean; telegram_chat_id: string; trusted_media_domains: string; max_agent_steps: number; max_web_pages: number; max_file_mb: number; max_archive_mb: number };
 type SkillItem = { id: string; version: string; title: string; description: string; category: string; transport: "local" | "service" | "mcp"; side_effects: string; permissions: string[]; timeout_seconds: number; model_policy?: { primary: string; fallback?: string } };
 type WorkflowNodeItem = { id: string; skill_id: string; depends_on: string[]; optional: boolean; note?: string };
 type WorkflowItem = { id: string; version: string; title: string; description: string; trigger_hints: string[]; nodes: WorkflowNodeItem[]; editable: boolean };
@@ -37,7 +37,15 @@ const tabs: { id: Tab; label: string; symbol: string }[] = [
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
-  if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = raw;
+    try {
+      const parsed = JSON.parse(raw) as { detail?: string };
+      message = parsed.detail || raw;
+    } catch { /* Keep a non-JSON server response readable. */ }
+    throw new Error(message || `HTTP ${response.status}`);
+  }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
@@ -153,7 +161,10 @@ export default function Home() {
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
 
   useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("theme");
+    const query = new URLSearchParams(window.location.search);
+    const requestedTab = query.get("tab") as Tab | null;
+    if (requestedTab && tabs.some((item) => item.id === requestedTab)) setTab(requestedTab);
+    const requested = query.get("theme");
     if (requested === "classic" || requested === "meow") {
       setAppearance(requested);
       window.localStorage.setItem(appearanceStorageKey, requested);
@@ -381,7 +392,7 @@ export default function Home() {
 
         {tab === "watchlist" && <Panel title="Банки под наблюдением"><BankSearch onAdded={refresh} /><div className="table">{watchlist.length ? watchlist.map((item) => <div className="row" key={item.cbr_reg_number}><div className="file-icon">{item.bank_name.slice(0, 2)}</div><div><b>{item.bank_name}</b><small>Рег. № {item.cbr_reg_number}</small></div><Status value={item.enabled ? "active" : "paused"} /></div>) : <Empty text="Найдите банк и включите наблюдение — поиск в чате работает и без подписки." />}</div></Panel>}
 
-        {tab === "settings" && <Panel title="Настройки запуска"><div className="settings-grid"><Setting title={systemStatus?.model_provider ?? "Провайдер моделей"} state={systemStatus?.model_configured ? "Настроен" : systemStatus?.model_key_present ? "Проверьте ключ" : "Не настроен"} stateOk={systemStatus?.model_configured} text={systemStatus?.model_error || `Основной агент — ${systemStatus?.orchestrator_model ?? "DeepSeek V4.1 Flash"}, финансовый — ${systemStatus?.finance_model ?? "Ling 3.0 Flash Fin"}. Ключ и адрес API читаются из корневого .env.`} /><Setting title="Telegram" text="Укажите TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID для дайджестов и срочных уведомлений." /><Setting title="Хранилище" text="Оригиналы и версии сохраняются в локальном Docker volume до ручного удаления." /><Setting title="Безопасность" text="Только публичный read-only веб, без входа, CAPTCHA, платежей и отправки форм." /></div></Panel>}
+        {tab === "settings" && <Panel title="Настройки"><SettingsView status={systemStatus} onChanged={refresh} /></Panel>}
       </section>
     </main>
   );
@@ -389,7 +400,97 @@ export default function Home() {
 
 function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) { return <section className="panel"><div className="panel-head"><h2>{title}</h2>{action}</div>{children}</section>; }
 function Empty({ text }: { text: string }) { return <div className="empty"><span>∅</span><p>{text}</p></div>; }
-function Setting({ title, text, state, stateOk }: { title: string; text: string; state?: string; stateOk?: boolean }) { return <article className="setting"><div className="setting-title"><p>{title}</p>{state && <span className={stateOk ? "config-ok" : "config-bad"}>{state}</span>}</div><span>{text}</span></article>; }
+
+function SettingsView({ status, onChanged }: { status?: SystemStatus; onChanged: () => Promise<void> }) {
+  const [modelKey, setModelKey] = useState("");
+  const [modelBaseUrl, setModelBaseUrl] = useState("https://routerai.ru/api/v1");
+  const [telegramToken, setTelegramToken] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [domains, setDomains] = useState("");
+  const [maxSteps, setMaxSteps] = useState(12);
+  const [maxPages, setMaxPages] = useState(25);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [noticeError, setNoticeError] = useState(false);
+
+  useEffect(() => {
+    if (!status) return;
+    setModelBaseUrl(status.model_base_url || "https://routerai.ru/api/v1");
+    setTelegramChatId(status.telegram_chat_id || "");
+    setDomains(status.trusted_media_domains || "");
+    setMaxSteps(status.max_agent_steps || 12);
+    setMaxPages(status.max_web_pages || 25);
+  }, [status]);
+
+  const show = (message: string, failed = false) => { setNotice(message); setNoticeError(failed); };
+  const payload = () => ({
+    ...(modelKey.trim() ? { model_api_key: modelKey.trim() } : {}),
+    model_base_url: modelBaseUrl.trim(),
+    ...(telegramToken.trim() ? { telegram_bot_token: telegramToken.trim() } : {}),
+    telegram_chat_id: telegramChatId.trim(),
+    trusted_media_domains: domains.trim(),
+    max_agent_steps: maxSteps,
+    max_web_pages: maxPages,
+  });
+  const persist = async () => {
+    const updated = await api<SystemStatus>("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload()) });
+    setModelKey(""); setTelegramToken("");
+    await onChanged();
+    return updated;
+  };
+  const save = async (event: FormEvent) => {
+    event.preventDefault(); setSaving(true); show("");
+    try { await persist(); show("Настройки сохранены. Перезапуск не требуется."); }
+    catch (e) { show(e instanceof Error ? e.message : "Не удалось сохранить настройки", true); }
+    finally { setSaving(false); }
+  };
+  const testModel = async () => {
+    setSaving(true); show("");
+    try { await persist(); const result = await api<{ provider: string }>("/api/settings/model/test", { method: "POST" }); show(`Подключение к ${result.provider} работает.`); }
+    catch (e) { show(e instanceof Error ? e.message : "Модель недоступна", true); }
+    finally { setSaving(false); }
+  };
+  const discoverTelegram = async () => {
+    setSaving(true); show("");
+    try {
+      await persist();
+      const result = await api<{ chat_id: string; title: string }>("/api/settings/telegram/discover", { method: "POST" });
+      setTelegramChatId(result.chat_id);
+      await api<SystemStatus>("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ telegram_chat_id: result.chat_id }) });
+      await onChanged(); show(`Найден чат «${result.title}». Chat ID сохранен.`);
+    } catch (e) { show(e instanceof Error ? e.message : "Не удалось найти чат", true); }
+    finally { setSaving(false); }
+  };
+  const testTelegram = async () => {
+    setSaving(true); show("");
+    try { await persist(); await api("/api/settings/telegram/test", { method: "POST" }); show("Тестовое сообщение отправлено в Telegram."); }
+    catch (e) { show(e instanceof Error ? e.message : "Не удалось отправить сообщение", true); }
+    finally { setSaving(false); }
+  };
+
+  return <form className="settings-form" onSubmit={save}>
+    {notice && <div className={noticeError ? "settings-notice settings-notice-error" : "settings-notice"}>{notice}</div>}
+    <section className="settings-section">
+      <div className="settings-section-head"><div><p className="eyebrow">МОДЕЛИ</p><h3>RouterAI / OpenRouter</h3></div><span className={status?.model_configured ? "config-ok" : "config-bad"}>{status?.model_configured ? "Подключено" : "Не настроено"}</span></div>
+      <div className="settings-fields"><label><span>Адрес API</span><input value={modelBaseUrl} onChange={(e) => setModelBaseUrl(e.target.value)} placeholder="https://routerai.ru/api/v1" /></label><label><span>API-ключ</span><input type="password" value={modelKey} onChange={(e) => setModelKey(e.target.value)} autoComplete="new-password" placeholder={status?.model_key_present ? "Ключ сохранен — введите только для замены" : "Вставьте ключ"} /></label></div>
+      <p className="settings-help">Основной агент: {status?.orchestrator_model ?? "deepseek/deepseek-v4.1-flash"}. Финансовый анализ: {status?.finance_model ?? "inclusionai/ling-3.0-flash-fin"}. Сохраненный ключ обратно не показывается.</p>
+      <button className="settings-secondary" type="button" disabled={saving} onClick={() => void testModel()}>Проверить подключение</button>
+    </section>
+    <section className="settings-section">
+      <div className="settings-section-head"><div><p className="eyebrow">УВЕДОМЛЕНИЯ</p><h3>Telegram</h3></div><span className={status?.telegram_configured ? "config-ok" : "config-bad"}>{status?.telegram_configured ? "Подключен" : status?.telegram_token_present ? "Нужен Chat ID" : "Не настроен"}</span></div>
+      <ol className="telegram-steps"><li>Создайте бота через <b>@BotFather</b> командой <code>/newbot</code> и скопируйте токен.</li><li>Вставьте токен ниже и нажмите «Сохранить».</li><li>Откройте своего бота в Telegram и нажмите <b>Start</b> или отправьте <code>/start</code>.</li><li>Нажмите «Найти Chat ID», затем отправьте тест.</li></ol>
+      <div className="settings-fields"><label><span>Токен бота</span><input type="password" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} autoComplete="new-password" placeholder={status?.telegram_token_present ? "Токен сохранен — введите только для замены" : "123456789:AA…"} /></label><label><span>Chat ID</span><input value={telegramChatId} onChange={(e) => setTelegramChatId(e.target.value)} placeholder="Определится автоматически" /></label></div>
+      <div className="settings-actions"><button className="settings-secondary" type="button" disabled={saving} onClick={() => void discoverTelegram()}>Найти Chat ID</button><button className="settings-secondary" type="button" disabled={saving || !status?.telegram_configured} onClick={() => void testTelegram()}>Отправить тест</button></div>
+      <p className="settings-help">После подключения бот присылает утренний дайджест, напоминания за 24 часа и сообщения о найденных публикациях. Команды: /today, /week, /mute, /unmute.</p>
+    </section>
+    <section className="settings-section settings-section-wide">
+      <div className="settings-section-head"><div><p className="eyebrow">ЛИМИТЫ И ИСТОЧНИКИ</p><h3>Поиск</h3></div></div>
+      <label><span>Приоритетные домены через запятую</span><textarea value={domains} onChange={(e) => setDomains(e.target.value)} /></label>
+      <div className="settings-fields settings-number-fields"><label><span>Шагов агента</span><input type="number" min={1} max={30} value={maxSteps} onChange={(e) => setMaxSteps(Number(e.target.value))} /></label><label><span>Страниц за запуск</span><input type="number" min={1} max={100} value={maxPages} onChange={(e) => setMaxPages(Number(e.target.value))} /></label></div>
+    </section>
+    <div className="settings-save"><button type="submit" disabled={saving}>{saving ? "Сохраняю…" : "Сохранить настройки"}</button><small>Секреты хранятся только в локальном каталоге данных Bank Reporter.</small></div>
+  </form>;
+}
 
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} КБ`;

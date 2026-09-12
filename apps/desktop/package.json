@@ -1,0 +1,45 @@
+{
+  "name": "bank-reporter-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Bank Reporter for macOS without Docker",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ru.bankreporter.desktop",
+    "productName": "Bank Reporter",
+    "asar": true,
+    "files": [
+      "main.mjs",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": ".runtime/web", "to": "runtime/web" },
+      { "from": ".runtime/api", "to": "runtime/api" },
+      { "from": ".runtime/browser", "to": "runtime/browser" },
+      { "from": ".runtime/browsers", "to": "runtime/browsers" },
+      { "from": ".runtime/lieflat-charts", "to": "runtime/lieflat-charts" }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": ["dmg"],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "dmg": {
+      "title": "Bank Reporter",
+      "artifactName": "Bank-Reporter-${version}-${arch}.${ext}"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

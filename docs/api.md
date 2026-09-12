@@ -147,3 +147,14 @@ curl -X POST http://localhost:3000/api/reports \
 
 - `GET /health` — liveness API внутри Compose-сети (наружу web проксирует только `/api/*`);
 - `GET /api/settings/status` — провайдер, наличие/валидность ключа и slugs моделей без раскрытия секрета.
+
+## Настройки и Telegram
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `PUT` | `/api/settings` | сохранить разрешенные runtime-настройки |
+| `POST` | `/api/settings/model/test` | выполнить минимальный запрос к основной модели |
+| `POST` | `/api/settings/telegram/discover` | найти последний чат, написавший сохраненному боту |
+| `POST` | `/api/settings/telegram/test` | отправить тестовое уведомление |
+
+Поля `model_api_key` и `telegram_bot_token` принимаются, но никогда не возвращаются. Пустое секретное поле не затирает сохраненное значение. Для явного удаления предусмотрены `clear_model_api_key` и `clear_telegram_bot_token`.

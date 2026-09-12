@@ -143,3 +143,17 @@ class FinancialFactOut(ORMModel):
     unit_scale: int
     period_end: date | None
     confidence: str
+
+
+class RuntimeSettingsUpdate(BaseModel):
+    model_api_key: str | None = Field(None, max_length=1000)
+    model_base_url: str | None = Field(None, max_length=1000)
+    telegram_bot_token: str | None = Field(None, max_length=1000)
+    telegram_chat_id: str | None = Field(None, max_length=100)
+    trusted_media_domains: str | None = Field(None, max_length=5000)
+    max_agent_steps: int | None = Field(None, ge=1, le=30)
+    max_web_pages: int | None = Field(None, ge=1, le=100)
+    max_file_mb: int | None = Field(None, ge=1, le=500)
+    max_archive_mb: int | None = Field(None, ge=1, le=2000)
+    clear_model_api_key: bool = False
+    clear_telegram_bot_token: bool = False

@@ -2,6 +2,10 @@
 
 Интерактивная схема, собранная [Archify](https://github.com/tt-a1i/archify): [открыть HTML](bank-reporter.architecture.html). Типизированный исходник: [JSON](bank-reporter.architecture.json). HTML автономен и не требует работающего Bank Reporter. Archify используется только как инструмент документации и не входит в runtime Bank Reporter.
 
+## Варианты развертывания
+
+Основная Compose-редакция использует PostgreSQL, Redis, Celery и отдельные контейнеры. Desktop-редакция macOS сохраняет те же API, агентские skills и правила provenance, но запускает Next.js, FastAPI и browser-worker как локальные sidecar-процессы. Метаданные хранятся в SQLite, а фоновые операции выполняет встроенная очередь и планировщик. Подробности: [Desktop для macOS](macos-desktop.md).
+
 ## Контейнеры
 
 | Сервис | Технология | Ответственность | Доступ |
