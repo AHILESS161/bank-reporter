@@ -2,7 +2,7 @@
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
-type Tab = "chat" | "calendar" | "library" | "reports" | "watchlist" | "settings";
+type Tab = "chat" | "constructor" | "calendar" | "library" | "reports" | "watchlist" | "settings";
 type Citation = { message: string; url: string; document_id?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
 type ThreadItem = { id: string; title: string; created_at: string; updated_at: string };
@@ -12,6 +12,9 @@ type DocumentItem = { id: string; title: string; document_type: string; reportin
 type ReportItem = { id: string; title: string; report_kind: string; status: string; summary?: string; created_at: string; artifacts?: { id: string; format: string }[] };
 type WatchItem = { cbr_reg_number: string; bank_name: string; enabled: boolean };
 type SystemStatus = { model_configured: boolean; model_key_present: boolean; model_provider: string; model_error: string; orchestrator_model: string; finance_model: string };
+type SkillItem = { id: string; version: string; title: string; description: string; category: string; transport: "local" | "service" | "mcp"; side_effects: string; permissions: string[]; timeout_seconds: number; model_policy?: { primary: string; fallback?: string } };
+type WorkflowNodeItem = { id: string; skill_id: string; depends_on: string[]; optional: boolean; note?: string };
+type WorkflowItem = { id: string; version: string; title: string; description: string; trigger_hints: string[]; nodes: WorkflowNodeItem[]; editable: boolean };
 
 const welcomeMessage: Message = {
   id: "welcome",
@@ -22,6 +25,7 @@ const activeThreadStorageKey = "bank-reporter-active-thread";
 
 const tabs: { id: Tab; label: string; symbol: string }[] = [
   { id: "chat", label: "Чат", symbol: "↗" },
+  { id: "constructor", label: "Конструктор", symbol: "◇" },
   { id: "calendar", label: "Календарь", symbol: "□" },
   { id: "library", label: "Библиотека", symbol: "≡" },
   { id: "reports", label: "Отчеты", symbol: "◫" },
@@ -142,17 +146,21 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState<string>();
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      const [c, d, r, w, s] = await Promise.all([
+      const [c, d, r, w, s, skillItems, workflowItems] = await Promise.all([
         api<CalendarEvent[]>("/api/calendar"),
         api<DocumentItem[]>("/api/documents"),
         api<ReportItem[]>("/api/reports"),
         api<WatchItem[]>("/api/watchlist"),
         api<SystemStatus>("/api/settings/status"),
+        api<SkillItem[]>("/api/skills"),
+        api<WorkflowItem[]>("/api/workflows"),
       ]);
-      setCalendar(c); setDocuments(d); setReports(r); setWatchlist(w); setSystemStatus(s);
+      setCalendar(c); setDocuments(d); setReports(r); setWatchlist(w); setSystemStatus(s); setSkills(skillItems); setWorkflows(workflowItems);
     } catch { /* API may still be starting. */ }
   }, []);
 
@@ -318,7 +326,7 @@ export default function Home() {
       </aside>
 
       <section className="workspace">
-        <header><div><p className="eyebrow">BANKING INTELLIGENCE / {new Date().toLocaleDateString("ru-RU")}</p><h1>{title}</h1></div><button className="refresh" onClick={() => void refresh()}>Обновить данные</button></header>
+        <header><div><p className="eyebrow">BANKING INTELLIGENCE / {new Date().toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" })}</p><h1>{title}</h1></div><button className="refresh" onClick={() => void refresh()}>Обновить данные</button></header>
 
         {tab === "chat" && <div className="chat-layout">
           <div className="chat-card">
@@ -334,6 +342,8 @@ export default function Home() {
             <h3>Быстрый старт</h3>{["Найди последнюю МСФО Сбера", "Что изменилось в ставке ЦБ?", "Статьи о качестве кредитов", "Сравни два отчетных периода"].map((q) => <button key={q} onClick={() => setPrompt(q)}>{q}</button>)}<h3>Состояние</h3><dl><div><dt>Документы</dt><dd>{documents.length}</dd></div><div><dt>Отчеты</dt><dd>{reports.length}</dd></div><div><dt>События</dt><dd>{calendar.length}</dd></div></dl>
           </aside>
         </div>}
+
+        {tab === "constructor" && <WorkflowConstructor skills={skills} workflows={workflows} onChanged={refresh} />}
 
         {tab === "calendar" && <Panel title="Календарь банковских событий" action={<a href="/api/calendar.ics">Экспортировать ICS</a>}><CalendarMonth events={calendar} /></Panel>}
 
@@ -373,6 +383,88 @@ function ReportPreview({ report, onClose }: { report: ReportItem; onClose: () =>
   return <div className="preview-backdrop" role="dialog" aria-modal="true" aria-label={`Предпросмотр: ${report.title}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="preview-window"><div className="preview-toolbar"><div><span>Предпросмотр отчета</span><b>{report.title}</b></div><div><a href={`/api/reports/${report.id}/preview`} target="_blank" rel="noreferrer">Открыть отдельно ↗</a><button onClick={onClose} aria-label="Закрыть предпросмотр">Закрыть</button></div></div><iframe src={`/api/reports/${report.id}/preview`} title={`Отчет ${report.title}`} sandbox="allow-popups allow-popups-to-escape-sandbox" /></section>
   </div>;
+}
+
+function WorkflowConstructor({ skills, workflows, onChanged }: { skills: SkillItem[]; workflows: WorkflowItem[]; onChanged: () => Promise<void> }) {
+  const [selectedId, setSelectedId] = useState("");
+  const [draft, setDraft] = useState<WorkflowNodeItem[]>([]);
+  const [name, setName] = useState("");
+  const [hints, setHints] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const selected = workflows.find((item) => item.id === selectedId);
+
+  useEffect(() => {
+    if (!selectedId && workflows[0]) setSelectedId(workflows[0].id);
+  }, [selectedId, workflows]);
+
+  useEffect(() => {
+    const workflow = workflows.find((item) => item.id === selectedId);
+    if (!workflow) return;
+    setDraft(workflow.nodes.map((node) => ({ ...node, depends_on: [...node.depends_on] })));
+    setName(workflow.title);
+    setHints(workflow.trigger_hints.join(", "));
+    setNotice("");
+  }, [selectedId, workflows]);
+
+  const linearize = (nodes: WorkflowNodeItem[]) => nodes.map((node, index) => ({ ...node, depends_on: index ? [nodes[index - 1].id] : [] }));
+  const addSkill = (skill: SkillItem) => {
+    let nodeId = skill.id;
+    let suffix = 2;
+    while (draft.some((node) => node.id === nodeId)) nodeId = `${skill.id}_${suffix++}`;
+    setDraft(linearize([...draft, { id: nodeId, skill_id: skill.id, depends_on: [], optional: false }]));
+    setNotice("");
+  };
+  const removeNode = (index: number) => setDraft(linearize(draft.filter((_, itemIndex) => itemIndex !== index)));
+  const moveNode = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= draft.length) return;
+    const next = [...draft];
+    [next[index], next[target]] = [next[target], next[index]];
+    setDraft(linearize(next));
+  };
+  const save = async () => {
+    if (!name.trim() || !draft.length) { setNotice("Добавьте название и хотя бы один skill."); return; }
+    setSaving(true); setNotice("");
+    const id = selected?.editable ? selected.id : `custom_${crypto.randomUUID().replaceAll("-", "")}`;
+    const payload: WorkflowItem = {
+      id, version: "1.0.0", title: name.trim(),
+      description: `Пользовательская цепочка из ${draft.length} skills`,
+      trigger_hints: hints.split(",").map((item) => item.trim()).filter(Boolean),
+      nodes: linearize(draft), editable: true,
+    };
+    try {
+      await api("/api/workflows/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      await api(`/api/workflows/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      await onChanged(); setSelectedId(id); setNotice("Workflow сохранён и доступен оркестратору.");
+    } catch (e) { setNotice(e instanceof Error ? e.message : "Не удалось сохранить workflow"); }
+    finally { setSaving(false); }
+  };
+  const removeWorkflow = async () => {
+    if (!selected?.editable || !window.confirm(`Удалить workflow «${selected.title}»?`)) return;
+    setSaving(true);
+    try { await api(`/api/workflows/${selected.id}`, { method: "DELETE" }); setSelectedId(workflows.find((item) => !item.editable)?.id ?? ""); await onChanged(); }
+    catch (e) { setNotice(e instanceof Error ? e.message : "Не удалось удалить workflow"); }
+    finally { setSaving(false); }
+  };
+
+  return <section className="constructor-layout">
+    <aside className="workflow-library">
+      <div className="constructor-heading"><p className="eyebrow">WORKFLOWS</p><h2>Готовые сценарии</h2><span>{workflows.length}</span></div>
+      <div className="workflow-list">{workflows.map((workflow) => <button key={workflow.id} className={workflow.id === selectedId ? "active" : ""} onClick={() => setSelectedId(workflow.id)}><span>{workflow.editable ? "CUSTOM" : "BUILT-IN"}</span><b>{workflow.title}</b><small>{workflow.nodes.length} узлов</small></button>)}</div>
+    </aside>
+    <div className="workflow-canvas">
+      <div className="constructor-heading canvas-head"><div><p className="eyebrow">КОМПОЗИЦИЯ</p><input aria-label="Название workflow" value={name} onChange={(event) => setName(event.target.value)} /></div><div className="constructor-actions"><button disabled={saving || !draft.length} onClick={() => void save()}>{saving ? "Сохраняю…" : selected?.editable ? "Сохранить" : "Сохранить копию"}</button>{selected?.editable && <button className="danger" disabled={saving} onClick={() => void removeWorkflow()}>Удалить</button>}</div></div>
+      <label className="workflow-hints"><span>Фразы-триггеры</span><input value={hints} onChange={(event) => setHints(event.target.value)} placeholder="например: кредитный риск, сравни банки" /></label>
+      <div className="pipeline" aria-label="Цепочка skills">{draft.length ? draft.map((node, index) => { const skill = skills.find((item) => item.id === node.skill_id); return <div className="pipeline-step" key={node.id}>{index > 0 && <i className="pipeline-link">→</i>}<article><div><span>{skill?.category ?? "skill"}</span><em>{skill?.transport ?? "local"}</em></div><b>{skill?.title ?? node.skill_id}</b><small>{node.skill_id}</small><footer><button title="Переместить влево" disabled={!index} onClick={() => moveNode(index, -1)}>←</button><button title="Переместить вправо" disabled={index === draft.length - 1} onClick={() => moveNode(index, 1)}>→</button><button className="remove-node" title="Удалить узел" onClick={() => removeNode(index)}>×</button></footer></article></div>; }) : <Empty text="Добавьте skills из палитры справа." />}</div>
+      {notice && <p className="constructor-notice">{notice}</p>}
+      <div className="workflow-explainer"><b>Как исполняется схема</b><span>Оркестратор передаёт между узлами типизированные результаты. Локальные расчёты остаются внутри worker, внешние источники подключаются через service/MCP-адаптеры.</span></div>
+    </div>
+    <aside className="skill-palette">
+      <div className="constructor-heading"><p className="eyebrow">SKILL REGISTRY</p><h2>Доступные skills</h2><span>{skills.length}</span></div>
+      <div className="skill-list">{skills.map((skill) => <article key={skill.id}><div><span className={`transport transport-${skill.transport}`}>{skill.transport}</span><small>{skill.version}</small></div><b>{skill.title}</b><p>{skill.description}</p>{skill.model_policy && <small className="model-route">{skill.model_policy.primary.split("/").at(-1)} → {skill.model_policy.fallback?.split("/").at(-1)}</small>}<button onClick={() => addSkill(skill)}>+ Добавить</button></article>)}</div>
+    </aside>
+  </section>;
 }
 
 const monthFormatter = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" });

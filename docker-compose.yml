@@ -43,6 +43,7 @@ services:
       retries: 20
 
   api:
+    image: bank-reporter-api:local
     build: ./services/api
     env_file:
       - path: .env
@@ -70,7 +71,7 @@ services:
       retries: 20
 
   worker:
-    build: ./services/api
+    image: bank-reporter-api:local
     command: ["celery", "-A", "app.celery_app:celery", "worker", "--loglevel=INFO", "--concurrency=2"]
     env_file:
       - path: .env
@@ -89,7 +90,7 @@ services:
         condition: service_healthy
 
   scheduler:
-    build: ./services/api
+    image: bank-reporter-api:local
     command: ["celery", "-A", "app.celery_app:celery", "beat", "--loglevel=INFO"]
     env_file:
       - path: .env

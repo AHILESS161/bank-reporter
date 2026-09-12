@@ -121,6 +121,7 @@ ssh -N -L 3000:127.0.0.1:3000 user@server.example
 - детерминированные `Decimal`-расчеты и модели DeepSeek/Ling через RouterAI или OpenRouter;
 - отчеты Lieflat R04/R09/R11 со встроенным HTML-предпросмотром и экспортом;
 - Telegram-дайджесты, напоминания и команды `/today`, `/week`, `/mute`, `/unmute`.
+- конструктор skills/workflows с типизированными узлами, проверкой графа, пользовательскими триггерами и границей для MCP-подключений.
 
 Наружу публикуется только `127.0.0.1:3000`; API, PostgreSQL, Redis и browser-worker остаются во внутренней Docker-сети.
 

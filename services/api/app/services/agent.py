@@ -8,11 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..skills import build_skill_registry, build_workflow_registry
 from ..models import (
     AnalysisRun,
     Bank,
     DocumentVersion,
     FinancialFact,
+    IntegrationState,
     Message,
     ProvenanceRef,
     Report,
@@ -30,7 +32,9 @@ from .reporting import ReportService
 from .security import domain_of
 
 
-TOOLS = [
+# Kept as a compatibility snapshot for older imports. Runtime tool schemas are
+# generated from app.skills.catalog and this list is no longer executed.
+LEGACY_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -209,6 +213,10 @@ class AgentService:
         self.pages = 0
         self.sources: list[dict] = []
         self.analysis_requested = False
+        self.skills = build_skill_registry(self)
+        stored = self.db.get(IntegrationState, "custom_workflows")
+        custom_workflows = stored.value.get("items", []) if stored else []
+        self.workflows = build_workflow_registry(self.skills, custom_workflows)
 
     def execute(self) -> str:
         run = self.db.get(AnalysisRun, self.run_id)
@@ -226,10 +234,22 @@ class AgentService:
             (item.content for item in reversed(thread_messages) if item.role == "user"), ""
         )
         self.analysis_requested = requests_analysis(latest_user_message)
+        workflow = self.workflows.route(
+            latest_user_message, analysis_requested=self.analysis_requested
+        )
+        self._event(
+            "status",
+            {
+                "message": f"Сценарий: {workflow.title}",
+                "workflow_id": workflow.id,
+                "skills": [node.skill_id for node in self.workflows.ordered_nodes(workflow.id)],
+            },
+        )
         if not self.models.configured:
             answer = f"Агент пока не может обратиться к модели: {self.models.configuration_error}. После замены ключа перезапустите API и worker."
             return self._complete(run, answer)
-        messages: list[dict] = [{"role": "system", "content": SYSTEM}] + [
+        system_prompt = f"{SYSTEM}\n\n{self.workflows.prompt_for(workflow)}"
+        messages: list[dict] = [{"role": "system", "content": system_prompt}] + [
             {"role": item.role, "content": item.content} for item in thread_messages
         ]
         for step in range(self.settings.max_agent_steps):
@@ -237,7 +257,7 @@ class AgentService:
             if run.cancel_requested:
                 return self._complete(run, "Запрос отменен пользователем.", "cancelled")
             self._event("status", {"message": f"Шаг исследования {step + 1}/{self.settings.max_agent_steps}"})
-            response = self.models.chat(messages, TOOLS)
+            response = self.models.chat(messages, self.skills.tool_specs())
             if not response.tool_calls:
                 return self._complete(run, response.content or "Работа завершена без текстового ответа.")
             assistant_message = {
@@ -266,7 +286,7 @@ class AgentService:
         self.db.add(record)
         self.db.commit()
         try:
-            result = getattr(self, f"tool_{name}")(**args)
+            result = self.skills.execute(name, args)
             record.status = "completed"
             record.result_summary = json.dumps(result, ensure_ascii=False, default=str)[:2000]
             self._event("status", {"message": f"Завершено: {name}"})

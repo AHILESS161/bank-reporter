@@ -13,11 +13,15 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import SessionLocal, create_schema, get_db
+from .skills import build_skill_registry, build_workflow_registry
+from .skills.contracts import WorkflowManifest
+from .skills.workflows import WorkflowValidationError
 from .models import (
     AnalysisRun,
     Artifact,
     Bank,
     CalendarEvent,
+    IntegrationState,
     Message,
     Report,
     RunEvent,
@@ -52,6 +56,8 @@ from .tasks import run_agent, sync_calendar
 
 
 settings = get_settings()
+skill_registry = build_skill_registry()
+workflow_registry = build_workflow_registry(skill_registry)
 
 
 @asynccontextmanager
@@ -67,7 +73,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Bank Reporter API",
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
@@ -94,7 +100,78 @@ def health():
         "status": "ok",
         "model_configured": configured,
         "openrouter_configured": openrouter_configured,
+        "skills": len(skill_registry.manifests()),
+        "workflows": len(workflow_registry.catalog()),
     }
+
+
+@app.get("/api/skills")
+def list_skills():
+    """Return the safe, non-secret capability catalog used by the agent."""
+    return skill_registry.catalog()
+
+
+@app.get("/api/workflows")
+def list_workflows(db: Session = Depends(get_db)):
+    """Return validated workflow graphs for the constructor UI."""
+    state = db.get(IntegrationState, "custom_workflows")
+    custom = state.value.get("items", []) if state else []
+    try:
+        return build_workflow_registry(skill_registry, custom).catalog()
+    except (ValueError, WorkflowValidationError):
+        return workflow_registry.catalog()
+
+
+@app.post("/api/workflows/validate")
+def validate_workflow(payload: WorkflowManifest):
+    """Validate a proposed graph without executing any skill."""
+    try:
+        workflow_registry.validate(payload)
+        ordered = workflow_registry._topological_nodes(payload)
+    except WorkflowValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"valid": True, "order": [node.id for node in ordered]}
+
+
+@app.put("/api/workflows/{workflow_id}")
+def save_workflow(
+    workflow_id: str, payload: WorkflowManifest, db: Session = Depends(get_db)
+):
+    if workflow_id != payload.id:
+        raise HTTPException(400, "Workflow id in path and body must match")
+    if workflow_id in {item["id"] for item in workflow_registry.catalog()}:
+        raise HTTPException(409, "Встроенный workflow нельзя перезаписать")
+    editable = payload.model_copy(update={"editable": True})
+    try:
+        workflow_registry.validate(editable)
+    except WorkflowValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    state = db.get(IntegrationState, "custom_workflows")
+    items = list(state.value.get("items", [])) if state else []
+    encoded = editable.model_dump(mode="json")
+    items = [item for item in items if item.get("id") != workflow_id] + [encoded]
+    if state:
+        state.value = {"items": items}
+    else:
+        db.add(IntegrationState(key="custom_workflows", value={"items": items}))
+    db.commit()
+    return encoded
+
+
+@app.delete("/api/workflows/{workflow_id}")
+def delete_workflow(workflow_id: str, db: Session = Depends(get_db)):
+    if workflow_id in {item["id"] for item in workflow_registry.catalog()}:
+        raise HTTPException(409, "Встроенный workflow нельзя удалить")
+    state = db.get(IntegrationState, "custom_workflows")
+    if not state:
+        raise HTTPException(404, "Workflow not found")
+    items = list(state.value.get("items", []))
+    filtered = [item for item in items if item.get("id") != workflow_id]
+    if len(filtered) == len(items):
+        raise HTTPException(404, "Workflow not found")
+    state.value = {"items": filtered}
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/api/settings/status")
