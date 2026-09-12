@@ -332,3 +332,137 @@ def rung_chart(facts: list[dict], chart_id: str) -> str:
         + "".join(marks)
         + "</svg>"
     )
+
+
+def trend_series(facts: list[dict], limit: int = 3) -> list[list[dict]]:
+    """Select metrics with at least three dated observations for small-multiple trends."""
+    grouped: dict[str, list[dict]] = {}
+    for item in facts:
+        if item.get("period_end"):
+            grouped.setdefault(str(item.get("metric_code") or item.get("label")), []).append(item)
+    output: list[list[dict]] = []
+    for items in grouped.values():
+        by_period: dict[str, dict] = {}
+        for item in sorted(items, key=lambda fact: str(fact.get("period_end"))):
+            by_period[str(item.get("period_end"))] = item
+        ordered = list(by_period.values())
+        if len(ordered) >= 3:
+            output.append(ordered[-8:])
+        if len(output) == limit:
+            break
+    return output
+
+
+def trend_chart(facts: list[dict]) -> str | None:
+    """Render readable independent-scale small multiples for time-series questions."""
+    series = trend_series(facts)
+    if not series:
+        return None
+    row_height, width = 190, 900
+    height = row_height * len(series)
+    marks: list[str] = []
+    for row, items in enumerate(series):
+        top = row * row_height
+        values = [Decimal(str(item["value"])) * Decimal(int(item.get("unit_scale") or 1)) for item in items]
+        minimum, maximum = min(values), max(values)
+        span = maximum - minimum or Decimal(1)
+        step = Decimal(680) / Decimal(max(1, len(items) - 1))
+        points: list[tuple[Decimal, Decimal]] = []
+        for index, value in enumerate(values):
+            x = Decimal(165) + step * Decimal(index)
+            y = Decimal(top + 132) - (value - minimum) / span * Decimal(82)
+            points.append((x, y))
+        path = " ".join(
+            f"{'M' if index == 0 else 'L'} {format(x, '.2f')} {format(y, '.2f')}"
+            for index, (x, y) in enumerate(points)
+        )
+        label = str(items[-1].get("label") or items[-1].get("metric_code") or "Показатель")
+        first, last = values[0], values[-1]
+        change = (last - first) / abs(first) * Decimal(100) if first else None
+        delta = (
+            f"{'+' if change > 0 else '−' if change < 0 else ''}{format_number(change.copy_abs().quantize(Decimal('0.1')))}%"
+            if change is not None
+            else "н/д"
+        )
+        marks.extend(
+            [
+                f'<text x="0" y="{top + 26}" class="series-label">{escape(label)}</text>',
+                f'<text x="900" y="{top + 26}" text-anchor="end" class="series-delta">{escape(delta)}</text>',
+                f'<line x1="165" y1="{top + 132}" x2="845" y2="{top + 132}" class="axis"/>',
+                f'<path d="{path}" class="trend-line" fill="none"/>',
+            ]
+        )
+        for item, (x, y) in zip(items, points, strict=True):
+            period = str(item.get("period_end"))
+            period_label = period[:4] if period.endswith("-12-31") else period[:7]
+            marks.extend(
+                [
+                    f'<circle cx="{x}" cy="{y}" r="5" class="trend-point" data-fact-id="{escape(str(item["id"]))}"/>',
+                    f'<text x="{x}" y="{y - Decimal(13)}" text-anchor="middle" class="point-value">{escape(format_fact_value(item))}</text>',
+                    f'<text x="{x}" y="{top + 154}" text-anchor="middle" class="period-label">{escape(period_label)}</text>',
+                ]
+            )
+    return (
+        f'<svg class="report-chart trend-chart" data-template="TREND" viewBox="0 0 {width} {height}" '
+        'role="img" aria-label="Динамика финансовых показателей по периодам"><style>'
+        '.trend-chart text{font-family:Inter,system-ui,sans-serif;fill:#17211d}'
+        '.trend-chart .series-label{font-size:15px;font-weight:800}.trend-chart .series-delta{font-size:15px;font-weight:850;fill:#176b5b}'
+        '.trend-chart .axis{stroke:#d9dedb}.trend-chart .trend-line{stroke:#176b5b;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}'
+        '.trend-chart .trend-point{fill:#fff;stroke:#176b5b;stroke-width:4}.trend-chart .point-value{font-size:11px;font-weight:750}'
+        '.trend-chart .period-label{font-size:10px;fill:#66706b}</style>'
+        + "".join(marks)
+        + "</svg>"
+    )
+
+
+def entity_comparison_groups(facts: list[dict], limit: int = 4) -> list[list[dict]]:
+    """Group the same metric and period across two or more banks/documents."""
+    grouped: dict[tuple[str, str], dict[str, dict]] = {}
+    for item in facts:
+        period = str(item.get("period_end") or "")
+        entity = str(item.get("entity") or item.get("document") or "")
+        if not period or not entity:
+            continue
+        key = (str(item.get("metric_code") or item.get("label")), period)
+        grouped.setdefault(key, {}).setdefault(entity, item)
+    groups = [list(entities.values()) for entities in grouped.values() if len(entities) >= 2]
+    return groups[:limit]
+
+
+def entity_comparison_chart(facts: list[dict]) -> str | None:
+    groups = entity_comparison_groups(facts)
+    if not groups:
+        return None
+    row_height = 58
+    height = 42 + sum(42 + len(group) * row_height for group in groups)
+    marks: list[str] = []
+    y = 25
+    for group in groups:
+        label = str(group[0].get("label") or group[0].get("metric_code") or "Показатель")
+        marks.append(f'<text x="0" y="{y}" class="metric-label">{escape(label)}</text>')
+        y += 24
+        values = [abs(Decimal(str(item["value"])) * Decimal(int(item.get("unit_scale") or 1))) for item in group]
+        maximum = max(values or [Decimal(1)]) or Decimal(1)
+        for item, value in zip(group, values, strict=True):
+            bar_width = max(5, int(500 * value / maximum))
+            entity = str(item.get("entity") or item.get("document"))
+            short_entity = entity if len(entity) <= 34 else f"{entity[:33]}…"
+            marks.extend(
+                [
+                    f'<text x="0" y="{y + 16}" class="entity-label"><title>{escape(entity)}</title>{escape(short_entity)}</text>',
+                    f'<rect x="250" y="{y}" width="500" height="22" rx="5" class="track"/>',
+                    f'<rect x="250" y="{y}" width="{bar_width}" height="22" rx="5" class="entity-bar" data-fact-id="{escape(str(item["id"]))}"/>',
+                    f'<text x="880" y="{y + 16}" text-anchor="end" class="entity-value">{escape(format_fact_value(item))}</text>',
+                ]
+            )
+            y += row_height
+        y += 18
+    return (
+        f'<svg class="report-chart entity-chart" data-template="ENTITY-COMPARE" viewBox="0 0 900 {height}" '
+        'role="img" aria-label="Сравнение показателей банков"><style>'
+        '.entity-chart text{font-family:Inter,system-ui,sans-serif;fill:#17211d}.entity-chart .metric-label{font-size:15px;font-weight:850}'
+        '.entity-chart .entity-label{font-size:11px;font-weight:700}.entity-chart .entity-value{font-size:12px;font-weight:800}'
+        '.entity-chart .track{fill:#e9ece9}.entity-chart .entity-bar{fill:#176b5b}</style>'
+        + "".join(marks)
+        + "</svg>"
+    )

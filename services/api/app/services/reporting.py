@@ -8,19 +8,23 @@ from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Artifact, DocumentVersion, FinancialFact, ProvenanceRef, Report, SourceDocument
+from ..models import Artifact, Bank, DocumentVersion, FinancialFact, ProvenanceRef, Report, SourceDocument
 from .browser import BrowserClient
 from .financial import growth
 from .lieflat import (
     LIEFLAT_COMMIT,
     chart_contract,
     comparison_pairs,
+    entity_comparison_chart,
+    entity_comparison_groups,
     format_fact_value,
     format_number,
     report_contract,
     rung_chart,
     select_chart,
     template_styles,
+    trend_chart,
+    trend_series,
 )
 from .model_router import ModelRouter, ModelUnavailable
 from .security import file_sha256
@@ -49,7 +53,7 @@ class ReportService:
             report.status = "partial"
         report.summary = narrative["summary"]
         html_path = self.storage.artifact_path(report.id, "report.html")
-        html_path.write_text(self._html(report, narrative, rows), encoding="utf-8")
+        html_path.write_text(self._html(report, narrative, rows, question), encoding="utf-8")
         self._artifact(report, "html", "text/html", html_path)
         if "xlsx" in output_formats:
             xlsx = self.storage.artifact_path(report.id, "report.xlsx")
@@ -80,10 +84,11 @@ class ReportService:
 
     def _facts(self, document_ids: list[str]) -> list[dict]:
         statement = (
-            select(FinancialFact, ProvenanceRef, SourceDocument)
+            select(FinancialFact, ProvenanceRef, SourceDocument, Bank)
             .join(ProvenanceRef, FinancialFact.provenance_id == ProvenanceRef.id)
             .join(DocumentVersion, FinancialFact.document_version_id == DocumentVersion.id)
             .join(SourceDocument, DocumentVersion.document_id == SourceDocument.id)
+            .outerjoin(Bank, SourceDocument.bank_reg_number == Bank.cbr_reg_number)
             .where(SourceDocument.id.in_(document_ids))
             .order_by(FinancialFact.period_end.desc(), FinancialFact.metric_code)
         )
@@ -98,18 +103,248 @@ class ReportService:
                 "period_end": fact.period_end,
                 "confidence": fact.confidence,
                 "document": document.title,
+                "entity": (bank.short_name or bank.name) if bank else document.title,
                 "source_url": provenance.source_url,
                 "page": provenance.page,
                 "sheet": provenance.sheet,
                 "cell_range": provenance.cell_range,
             }
-            for fact, provenance, document in self.db.execute(statement).all()
+            for fact, provenance, document, bank in self.db.execute(statement).all()
         ]
         for row in rows:
             row["display_value"] = format_fact_value(row)
         return rows
 
-    def _html(self, report: Report, narrative: dict, facts: list[dict]) -> str:
+    def _html(
+        self, report: Report, narrative: dict, facts: list[dict], question: str = ""
+    ) -> str:
+        view = self._report_view(report, question, facts)
+        if view == "brief":
+            return self._legacy_html(report, narrative, facts)
+        return self._readable_html(report, narrative, facts, view)
+
+    @staticmethod
+    def _report_view(report: Report, question: str, facts: list[dict]) -> str:
+        if report.report_kind == "brief":
+            return "brief"
+        text = f"{report.title} {question}".casefold()
+        compare_terms = (
+            "сравн",
+            "динамик",
+            "изменен",
+            "изменил",
+            "рост",
+            "снижен",
+            "год к году",
+            "г/г",
+            " vs ",
+        )
+        comparison_requested = report.report_kind == "comparison" or any(
+            term in text for term in compare_terms
+        )
+        if not comparison_requested:
+            return "snapshot"
+        if any(term in text for term in ("динамик", "тренд", "по год", "по кварт")) and trend_series(
+            facts
+        ):
+            return "trend"
+        entities = {str(item.get("entity") or "") for item in facts if item.get("entity")}
+        if len(entities) >= 2 and entity_comparison_groups(facts):
+            return "entities"
+        if comparison_pairs(facts):
+            return "periods"
+        return "comparison_empty"
+
+    def _readable_html(
+        self, report: Report, narrative: dict, facts: list[dict], view: str
+    ) -> str:
+        contract_kind = "comparison" if view in {"trend", "periods", "entities", "comparison_empty"} else "financial"
+        contract = report_contract(contract_kind, self.models.settings.lieflat_dir)
+        fact_by_id = {str(item["id"]): item for item in facts}
+        source_number = {str(item["id"]): index for index, item in enumerate(facts, 1)}
+
+        def present_text(text: str, fact_ids: list[str] | None = None) -> str:
+            rendered = str(text or "")
+            selected = (
+                [fact_by_id[str(fact_id)] for fact_id in fact_ids if str(fact_id) in fact_by_id]
+                if fact_ids is not None
+                else facts
+            )
+            for fact in selected:
+                raw = Decimal(str(fact["value"]))
+                display = format_fact_value(fact)
+                for variant in sorted(
+                    {str(fact["value"]), format(raw, "f"), format_number(raw)},
+                    key=len,
+                    reverse=True,
+                ):
+                    rendered = re.sub(
+                        rf"(?<![\d.,]){re.escape(variant)}(?![\d.,])"
+                        r"(?:\s+(?:тыс\.?|млн|млрд|трлн)\s*(?:RUB|RUR|₽))?",
+                        display,
+                        rendered,
+                        flags=re.IGNORECASE,
+                    )
+            return rendered
+
+        def delta(previous: dict, current: dict) -> tuple[str, str]:
+            metric = str(current.get("metric_code") or "").lower()
+            currency = str(current.get("currency") or "").upper()
+            if metric in {
+                "capital_adequacy",
+                "capital_adequacy_ratio",
+                "npl",
+                "npl_ratio",
+                "roa",
+                "roe",
+            } or currency in {"%", "PERCENT"}:
+                change = Decimal(str(current["value"])) - Decimal(str(previous["value"]))
+                suffix = " п.п."
+            else:
+                previous_value = Decimal(str(previous["value"])) * Decimal(
+                    int(previous.get("unit_scale") or 1)
+                )
+                current_value = Decimal(str(current["value"])) * Decimal(
+                    int(current.get("unit_scale") or 1)
+                )
+                calculated = growth(current_value, previous_value)
+                if calculated is None:
+                    return "н/д", "flat"
+                change, suffix = calculated, "%"
+            css_class = "up" if change > 0 else "down" if change < 0 else "flat"
+            prefix = "+" if change > 0 else "−" if change < 0 else ""
+            return f"{prefix}{format_number(change.copy_abs())}{suffix}", css_class
+
+        pairs = comparison_pairs(facts)
+        latest: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for item in sorted(facts, key=lambda fact: str(fact.get("period_end") or ""), reverse=True):
+            key = (str(item.get("metric_code")), str(item.get("entity") or ""))
+            if key not in seen:
+                latest.append(item)
+                seen.add(key)
+
+        if view == "trend":
+            chart = trend_chart(facts)
+            view_label = "Динамика по периодам"
+            chart_template = "TREND"
+        elif view == "periods":
+            chart = rung_chart(facts, "F6")
+            view_label = "Сравнение периодов"
+            chart_template = "F6"
+        elif view == "entities":
+            chart = entity_comparison_chart(facts)
+            view_label = "Сравнение банков"
+            chart_template = "ENTITY-COMPARE"
+        elif view == "comparison_empty":
+            chart = None
+            view_label = "Сравнение"
+            chart_template = "NONE"
+        else:
+            chart = None
+            view_label = "Финансовый срез"
+            chart_template = "KPI-SNAPSHOT"
+
+        if view in {"periods", "trend"} and pairs:
+            cards = "".join(
+                f'<article class="metric-card"><span>{html.escape(str(current.get("label") or current.get("metric_code")))}</span>'
+                f'<strong>{html.escape(format_fact_value(current))}</strong>'
+                f'<small>{html.escape(str(previous.get("period_end")))} → {html.escape(str(current.get("period_end")))}</small>'
+                f'<em class="{delta(previous, current)[1]}">{html.escape(delta(previous, current)[0])}</em></article>'
+                for previous, current in pairs[:4]
+            )
+        else:
+            cards = "".join(
+                f'<article class="metric-card"><span>{html.escape(str(item.get("label") or item.get("metric_code")))}</span>'
+                f'<strong>{html.escape(format_fact_value(item))}</strong>'
+                f'<small>{html.escape(str(item.get("period_end") or "Период не указан"))}</small>'
+                f'<a href="#source-{html.escape(str(item["id"]))}">Источник [{source_number[str(item["id"])]}]</a></article>'
+                for item in latest[:6]
+            )
+
+        comparison_rows = "".join(
+            f'<tr><th>{html.escape(str(current.get("label") or current.get("metric_code")))}</th>'
+            f'<td><small>{html.escape(str(previous.get("period_end")))}</small><b>{html.escape(format_fact_value(previous))}</b></td>'
+            f'<td><small>{html.escape(str(current.get("period_end")))}</small><b>{html.escape(format_fact_value(current))}</b></td>'
+            f'<td><strong class="{delta(previous, current)[1]}">{html.escape(delta(previous, current)[0])}</strong></td></tr>'
+            for previous, current in pairs
+        )
+        comparison_table = (
+            '<div class="comparison-table"><table><thead><tr><th>Показатель</th><th>Предыдущий период</th>'
+            '<th>Текущий период</th><th>Изменение</th></tr></thead><tbody>'
+            + comparison_rows
+            + "</tbody></table></div>"
+            if view == "periods" and comparison_rows
+            else ""
+        )
+        empty_comparison = (
+            '<div class="data-warning"><b>Недостаточно данных для честного сравнения.</b>'
+            '<span>Не найдено одного показателя за два периода или двух банков за один период. '
+            "Одиночные значения намеренно не показаны как динамика.</span></div>"
+            if view == "comparison_empty"
+            else ""
+        )
+
+        highlights = "".join(
+            f'<li><span>{html.escape(present_text(item.get("text", ""), item.get("fact_ids", [])))}</span>'
+            + "".join(
+                f'<a href="#source-{html.escape(str(fact_id))}">[{source_number[str(fact_id)]}]</a>'
+                for fact_id in dict.fromkeys(item.get("fact_ids", []))
+                if str(fact_id) in source_number
+            )
+            + "</li>"
+            for item in narrative.get("highlights", [])[:6]
+        )
+        risks = "".join(
+            f"<li>{html.escape(present_text(str(item)))}</li>"
+            for item in narrative.get("risks", [])[:6]
+        )
+
+        def coordinate(item: dict) -> str:
+            if item.get("page"):
+                return f"страница {item['page']}"
+            if item.get("sheet"):
+                return f"лист {item['sheet']}"
+            if item.get("cell_range"):
+                return f"ячейка {item['cell_range']}"
+            return "координата не указана"
+
+        sources = "".join(
+            f'<li id="source-{html.escape(str(item["id"]))}"><span>{index:02d}</span><div>'
+            f'<a href="{html.escape(str(item.get("source_url") or "#"))}" target="_blank" rel="noreferrer">'
+            f'{html.escape(str(item.get("document") or "Документ"))}</a>'
+            f'<small>{html.escape(str(item.get("label") or item.get("metric_code")))} · '
+            f'{html.escape(coordinate(item))}</small></div></li>'
+            for index, item in enumerate(facts, 1)
+        )
+        summary = html.escape(present_text(str(narrative.get("summary") or "")))
+        chart_block = (
+            f'<section class="chart-panel"><div class="section-head"><div><span>ВИЗУАЛИЗАЦИЯ</span>'
+            f'<h2>{html.escape(view_label)}</h2></div><p>Числа и изменения рассчитаны детерминированно.</p></div>'
+            f'<div class="chart-canvas">{chart}</div>{comparison_table}</section>'
+            if chart
+            else empty_comparison
+        )
+        return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(report.title)}</title>
+<!-- Report layout: {view}; Lieflat reference: {contract.source_file} @ {LIEFLAT_COMMIT}. Charts use Bank Reporter deterministic inline SVG. -->
+<style>
+:root{{--paper:#f7f4ee;--surface:#fffdfa;--ink:#17211d;--muted:#66706b;--line:#d8ddd9;--soft:#edf1ee;--accent:#176b5b;--accent-soft:#dcece6;--danger:#a84c43}}
+*{{box-sizing:border-box}}html{{background:var(--paper)}}body{{margin:0;padding:28px;color:var(--ink);background:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;font-variant-numeric:tabular-nums}}
+.report{{width:min(1400px,100%);margin:auto;background:var(--surface);border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:0 18px 60px rgba(23,33,29,.08)}}
+.hero{{padding:48px 56px 42px;background:linear-gradient(120deg,#fffdfa 0%,#edf6f2 100%);border-bottom:1px solid var(--line)}}.hero-top{{display:flex;justify-content:space-between;gap:20px;align-items:center}}.brand,.view-label{{font-size:11px;font-weight:850;letter-spacing:.14em;text-transform:uppercase}}.view-label{{padding:8px 12px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}}h1{{max-width:1050px;margin:28px 0 18px;font-size:clamp(36px,4vw,58px);line-height:1.03;letter-spacing:-.04em}}.summary{{max-width:1050px;margin:0;color:#3e4a45;font-size:18px;line-height:1.6}}
+.body{{padding:34px 56px 46px}}.metric-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:30px}}.metric-card{{position:relative;min-height:152px;padding:20px;border:1px solid var(--line);border-radius:16px;background:#fff}}.metric-card span,.metric-card small{{display:block;color:var(--muted)}}.metric-card span{{min-height:34px;font-size:12px;line-height:1.4}}.metric-card strong{{display:block;margin:13px 0 8px;font-size:26px;line-height:1.05;letter-spacing:-.025em}}.metric-card small{{font-size:10px}}.metric-card em{{display:inline-block;margin-top:12px;padding:5px 8px;border-radius:7px;background:var(--soft);font-size:12px;font-style:normal;font-weight:850}}.metric-card em.up,.up{{color:var(--accent)}}.metric-card em.down,.down{{color:var(--danger)}}.metric-card>a{{display:inline-block;margin-top:12px;color:var(--accent);font-size:10px}}
+.chart-panel,.analysis-panel{{margin-top:24px;padding:28px;border:1px solid var(--line);border-radius:18px;background:#fff}}.section-head{{display:flex;align-items:end;justify-content:space-between;gap:24px;margin-bottom:24px}}.section-head span,.analysis-panel>span{{color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.14em}}.section-head h2,.analysis-panel h2{{margin:6px 0 0;font-size:28px;letter-spacing:-.025em}}.section-head p{{max-width:390px;margin:0;color:var(--muted);font-size:12px;line-height:1.5}}.chart-canvas{{padding:18px;border-radius:14px;background:#fafbf9}}.report-chart,.lieflat-chart{{display:block;width:100%;height:auto}}
+.comparison-table{{margin-top:24px;overflow:auto}}.comparison-table table{{width:100%;border-collapse:collapse}}.comparison-table th,.comparison-table td{{padding:14px 12px;border-top:1px solid var(--line);font-size:14px;text-align:left}}.comparison-table thead th{{color:var(--muted);font-size:10px;letter-spacing:.09em;text-transform:uppercase}}.comparison-table td small,.comparison-table td b{{display:block}}.comparison-table td small{{margin-bottom:4px;color:var(--muted);font-size:10px}}.data-warning{{padding:24px;border:1px solid #dfc9a5;border-radius:16px;background:#fff9ee}}.data-warning b,.data-warning span{{display:block}}.data-warning span{{margin-top:8px;color:#6b5b42;line-height:1.55}}
+.analysis-grid{{display:grid;grid-template-columns:1.3fr 1fr;gap:20px}}.analysis-panel ol,.analysis-panel ul{{margin:18px 0 0;padding-left:22px}}.analysis-panel li{{margin-bottom:13px;line-height:1.55}}.analysis-panel li a{{margin-left:3px;color:var(--accent);font-size:10px;vertical-align:super}}
+.sources{{margin-top:28px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}}.sources summary{{display:flex;justify-content:space-between;padding:17px 0;cursor:pointer;list-style:none;font-size:12px;font-weight:850;letter-spacing:.1em;text-transform:uppercase}}.sources summary::-webkit-details-marker{{display:none}}.sources summary:after{{content:'＋';font-size:17px}}.sources[open] summary:after{{content:'−'}}.sources ol{{margin:0;padding:0 0 14px;list-style:none}}.sources li{{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:12px 0;border-top:1px dotted var(--line)}}.sources li>span{{color:var(--accent);font-size:11px;font-weight:850}}.sources a{{color:var(--ink);font-size:12px;font-weight:750}}.sources small{{display:block;margin-top:4px;color:var(--muted);font-size:10px}}footer{{display:flex;justify-content:space-between;gap:20px;margin-top:28px;color:var(--muted);font-size:10px;line-height:1.5}}
+@media(max-width:900px){{body{{padding:0}}.report{{border:0;border-radius:0}}.hero,.body{{padding:30px 22px}}.metric-grid{{grid-template-columns:1fr 1fr}}.analysis-grid{{grid-template-columns:1fr}}.section-head{{display:block}}.section-head p{{margin-top:8px}}}}
+@media print{{@page{{size:A4;margin:10mm}}body{{padding:0;background:white}}.report{{border:0;box-shadow:none}}.hero{{padding:10mm 9mm 8mm}}.body{{padding:7mm 9mm}}.sources>summary{{display:none}}.sources>ol{{display:block}}}}
+</style></head><body><main class="report" data-report-view="{view}" data-lieflat-report="{contract.report_id}" data-lieflat-chart="{chart_template}" data-lieflat-commit="{LIEFLAT_COMMIT}" data-template-source="{contract.source_file}">
+<header class="hero"><div class="hero-top"><span class="brand">BANK REPORTER · ПРОВЕРЯЕМЫЕ ДАННЫЕ</span><span class="view-label">{html.escape(view_label)}</span></div><h1>{html.escape(report.title)}</h1><p class="summary">{summary or 'Интерпретация отсутствует; ниже приведены только проверяемые факты.'}</p></header>
+<div class="body">{f'<section class="metric-grid">{cards}</section>' if cards else ''}{chart_block}<section class="analysis-grid"><article class="analysis-panel"><span>ГЛАВНЫЕ ВЫВОДЫ</span><h2>Что изменилось</h2><ol>{highlights or '<li>Недостаточно подтверждённых данных для вывода.</li>'}</ol></article><article class="analysis-panel"><span>ОГРАНИЧЕНИЯ</span><h2>Что проверить</h2><ul>{risks or '<li>Существенные ограничения не указаны.</li>'}</ul></article></section>
+<details class="sources"><summary>Источники и координаты · {len(facts)}</summary><ol>{sources or '<li>Источники не привязаны.</li>'}</ol></details><footer><span>Не является инвестиционной рекомендацией.</span><span>Все числа связаны с ProvenanceRef · офлайн HTML · без внешних скриптов</span></footer></div></main></body></html>'''
+
+    def _legacy_html(self, report: Report, narrative: dict, facts: list[dict]) -> str:
         effective_kind = "financial" if report.report_kind == "brief" and len(facts) > 6 else report.report_kind
         contract = report_contract(effective_kind, self.models.settings.lieflat_dir)
         requested_chart = narrative.get("chart", {}).get("template", "F1")

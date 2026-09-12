@@ -6,9 +6,11 @@ from app.services.lieflat import (
     LIEFLAT_COMMIT,
     chart_contract,
     comparison_pairs,
+    entity_comparison_chart,
     format_fact_value,
     report_contract,
     rung_chart,
+    trend_chart,
 )
 from app.services.reporting import ReportService
 
@@ -88,6 +90,26 @@ def test_single_period_is_not_presented_as_dynamics():
     assert comparison_pairs([facts()[1]]) == []
 
 
+def test_trend_chart_uses_a_line_and_all_period_labels():
+    third = {**facts()[1], "id": "fact-third", "value": "150", "period_end": date(2027, 12, 31)}
+    rendered = trend_chart([*facts(), third])
+    assert rendered is not None
+    assert 'data-template="TREND"' in rendered
+    assert 'class="trend-line"' in rendered
+    assert all(year in rendered for year in ("2025", "2026", "2027"))
+
+
+def test_entity_chart_compares_banks_at_the_same_period():
+    bank_facts = [
+        {**facts()[1], "id": "sber", "entity": "Сбер"},
+        {**facts()[1], "id": "vtb", "entity": "ВТБ", "value": "90"},
+    ]
+    rendered = entity_comparison_chart(bank_facts)
+    assert rendered is not None
+    assert 'data-template="ENTITY-COMPARE"' in rendered
+    assert "Сбер" in rendered and "ВТБ" in rendered
+
+
 def test_ratio_is_formatted_as_percent_even_if_source_currency_is_rub():
     assert format_fact_value(
         {"metric_code": "capital_adequacy_ratio", "value": "14.70000000", "currency": "RUB"}
@@ -116,7 +138,7 @@ def test_financial_value_is_presented_in_readable_scale():
 def test_report_html_is_offline_and_has_no_demo_data():
     service = ReportService.__new__(ReportService)
     service.models = SimpleNamespace(settings=SimpleNamespace(lieflat_dir=Path("missing")))
-    report = SimpleNamespace(title="Проверяемый отчет", report_kind="financial")
+    report = SimpleNamespace(title="Динамика прибыли", report_kind="financial")
     narrative = {
         "summary": "Прибыль изменилась.",
         "highlights": [{"text": "Рост подтвержден.", "fact_ids": ["fact-old", "fact-new"]}],
@@ -133,9 +155,9 @@ def test_report_html_is_offline_and_has_no_demo_data():
     assert "Не является инвестиционной рекомендацией" in rendered
     assert '<details class="sources">' in rendered
     assert "125 ₽" in rendered
-    assert 'data-template-source="templates/reports/report-04.zh.html"' in rendered
-    assert "LIEFLAT 报告模板 04" in rendered
-    assert "REAL TEMPLATE FROM BASICS-GALLERY.HTML" in rendered
+    assert 'data-template-source="templates/reports/report-09.zh.html"' in rendered
+    assert 'data-report-view="periods"' in rendered
+    assert "AT A GLANCE" not in rendered
     assert 'class="comparison-table"' in rendered
     assert "Предыдущий период" in rendered
     assert "+25%" in rendered
@@ -156,11 +178,33 @@ def test_comparison_and_brief_use_vendored_report_skeletons():
     brief = service._html(SimpleNamespace(title="Справка", report_kind="brief"), narrative, facts())
     assert 'data-lieflat-report="R09"' in comparison
     assert 'data-template-source="templates/reports/report-09.zh.html"' in comparison
-    assert "LIEFLAT 报告模板 09" in comparison
+    assert 'data-report-view="periods"' in comparison
+    assert "Сравнение периодов" in comparison
+    assert "AT A GLANCE" not in comparison
     assert 'data-lieflat-report="R11"' in brief
     assert 'data-template-source="templates/reports/report-11.zh.html"' in brief
     assert "LIEFLAT 报告模板 11" in brief
     assert "<script src=" not in comparison + brief
+
+
+def test_report_view_routes_trend_snapshot_and_entity_comparison():
+    service = ReportService.__new__(ReportService)
+    third = {**facts()[1], "id": "fact-third", "value": "150", "period_end": date(2027, 12, 31)}
+    assert service._report_view(
+        SimpleNamespace(title="Динамика прибыли", report_kind="financial"),
+        "Покажи динамику по годам",
+        [*facts(), third],
+    ) == "trend"
+    assert service._report_view(
+        SimpleNamespace(title="Показатели", report_kind="financial"), "", facts()
+    ) == "snapshot"
+    banks = [
+        {**facts()[1], "id": "sber", "entity": "Сбер"},
+        {**facts()[1], "id": "vtb", "entity": "ВТБ", "value": "90"},
+    ]
+    assert service._report_view(
+        SimpleNamespace(title="Сравнение банков", report_kind="comparison"), "", banks
+    ) == "entities"
 
 
 def test_decimal_calculations_feed_xlsx():
