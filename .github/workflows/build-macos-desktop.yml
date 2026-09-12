@@ -53,6 +53,6 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Publish desktop release
-        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --generate-notes --title "Bank Reporter $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --repo "$GITHUB_REPOSITORY" --generate-notes --title "Bank Reporter $GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}
