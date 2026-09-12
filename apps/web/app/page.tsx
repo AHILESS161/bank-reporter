@@ -3,6 +3,7 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 type Tab = "chat" | "constructor" | "calendar" | "library" | "reports" | "watchlist" | "settings";
+type Appearance = "classic" | "meow";
 type Citation = { message: string; url: string; document_id?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
 type ThreadItem = { id: string; title: string; created_at: string; updated_at: string };
@@ -22,6 +23,7 @@ const welcomeMessage: Message = {
   content: "Назовите банк, отчетный период или тему. Я найду первоисточники, покажу ход работы и отделю факты от интерпретации.",
 };
 const activeThreadStorageKey = "bank-reporter-active-thread";
+const appearanceStorageKey = "bank-reporter-appearance";
 
 const tabs: { id: Tab; label: string; symbol: string }[] = [
   { id: "chat", label: "Чат", symbol: "↗" },
@@ -128,6 +130,7 @@ function Sources({ citations = [] }: { citations?: Citation[] }) {
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("chat");
+  const [appearance, setAppearance] = useState<Appearance>("classic");
   const [threadId, setThreadId] = useState<string>();
   const [threads, setThreads] = useState<ThreadItem[]>([]);
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
@@ -148,6 +151,25 @@ export default function Home() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
+
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("theme");
+    if (requested === "classic" || requested === "meow") {
+      setAppearance(requested);
+      window.localStorage.setItem(appearanceStorageKey, requested);
+      return;
+    }
+    const saved = window.localStorage.getItem(appearanceStorageKey);
+    if (saved === "classic" || saved === "meow") setAppearance(saved);
+  }, []);
+
+  const toggleAppearance = useCallback(() => {
+    setAppearance((current) => {
+      const next: Appearance = current === "classic" ? "meow" : "classic";
+      window.localStorage.setItem(appearanceStorageKey, next);
+      return next;
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -318,15 +340,15 @@ export default function Home() {
   const title = useMemo(() => tabs.find((item) => item.id === tab)?.label, [tab]);
 
   return (
-    <main className="shell">
+    <main className="shell" data-theme={appearance}>
       <aside className="sidebar">
-        <div className="brand"><div className="mark">BR</div><div><strong>Bank Reporter</strong><small>корреспондент-агент</small></div></div>
+        <div className="brand"><div className="mark" aria-hidden="true">{appearance === "meow" ? "🐱" : "BR"}</div><div><strong>Bank Reporter</strong><small>{appearance === "meow" ? "пушистый корреспондент" : "корреспондент-агент"}</small></div></div>
         <nav>{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><span>{item.symbol}</span>{item.label}</button>)}</nav>
-        <div className="sidebar-foot"><span className="pulse" /> локальный контур<small>Данные остаются на устройстве</small></div>
+        <div className="sidebar-foot"><span className="pulse" /> локальный контур<small>{appearance === "meow" ? "Данные под защитой котиков и кроликов" : "Данные остаются на устройстве"}</small></div>
       </aside>
 
       <section className="workspace">
-        <header><div><p className="eyebrow">BANKING INTELLIGENCE / {new Date().toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" })}</p><h1>{title}</h1></div><button className="refresh" onClick={() => void refresh()}>Обновить данные</button></header>
+        <header><div><p className="eyebrow">BANKING INTELLIGENCE / {new Date().toLocaleDateString("ru-RU", { timeZone: "Europe/Moscow" })}</p><h1>{title}</h1></div><div className="header-actions"><button className="theme-toggle" type="button" aria-pressed={appearance === "meow"} aria-label={appearance === "meow" ? "Включить деловую тему" : "Включить розовую тему с котиками и кроликами"} onClick={toggleAppearance}><span aria-hidden="true">{appearance === "meow" ? "🐱🐰" : "◐"}</span>{appearance === "meow" ? "Котики и кролики" : "Деловая"}</button><button className="refresh" onClick={() => void refresh()}>Обновить данные</button></div></header>
 
         {tab === "chat" && <div className="chat-layout">
           <div className="chat-card">
