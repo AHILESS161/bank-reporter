@@ -24,11 +24,25 @@ class ModelRouter:
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.openrouter_api_key)
+        key = self.settings.openrouter_api_key.strip()
+        if not key:
+            return False
+        if "openrouter.ai" in self.settings.openrouter_base_url:
+            return key.startswith("sk-or-v1-")
+        return True
+
+    @property
+    def configuration_error(self) -> str:
+        key = self.settings.openrouter_api_key.strip()
+        if not key:
+            return "OPENROUTER_API_KEY не задан в корневом .env"
+        if "openrouter.ai" in self.settings.openrouter_base_url and not key.startswith("sk-or-v1-"):
+            return "В OPENROUTER_API_KEY указан ключ другого провайдера. Нужен ключ OpenRouter формата sk-or-v1-…"
+        return ""
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, model: str | None = None):
         if not self.configured:
-            raise ModelUnavailable("OPENROUTER_API_KEY не задан")
+            raise ModelUnavailable(self.configuration_error)
         selected = model or self.settings.orchestrator_model
         started = time.monotonic()
         record = ModelRun(

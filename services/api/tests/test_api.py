@@ -8,6 +8,10 @@ def test_health_and_thread():
     with TestClient(app) as client:
         health = client.get("/health")
         assert health.status_code == 200
+        assert health.json()["openrouter_configured"] is False
+        config = client.get("/api/settings/status")
+        assert config.status_code == 200
+        assert config.json()["openrouter_key_present"] is False
         thread = client.post("/api/threads", json={"title": "Тест"})
         assert thread.status_code == 200
         assert thread.json()["title"] == "Тест"

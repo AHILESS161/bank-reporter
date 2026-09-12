@@ -82,7 +82,35 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "openrouter_configured": bool(settings.openrouter_api_key)}
+    key = settings.openrouter_api_key.strip()
+    configured = bool(key) and (
+        "openrouter.ai" not in settings.openrouter_base_url or key.startswith("sk-or-v1-")
+    )
+    return {"status": "ok", "openrouter_configured": configured}
+
+
+@app.get("/api/settings/status")
+def settings_status():
+    """Return only non-secret runtime configuration for the local UI."""
+    key = settings.openrouter_api_key.strip()
+    format_valid = bool(key) and (
+        "openrouter.ai" not in settings.openrouter_base_url or key.startswith("sk-or-v1-")
+    )
+    return {
+        "openrouter_configured": format_valid,
+        "openrouter_key_present": bool(key),
+        "openrouter_error": (
+            ""
+            if format_valid
+            else (
+                "Нужен ключ OpenRouter формата sk-or-v1-…"
+                if key
+                else "Ключ не найден в корневом .env"
+            )
+        ),
+        "orchestrator_model": settings.orchestrator_model,
+        "finance_model": settings.finance_model,
+    }
 
 
 @app.post("/api/threads", response_model=ThreadOut)

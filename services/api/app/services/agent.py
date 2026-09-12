@@ -141,7 +141,7 @@ class AgentService:
             ).all()
         )[-12:]
         if not self.models.configured:
-            answer = "Агентский поиск готов, но OPENROUTER_API_KEY не задан. Загрузите документ в «Библиотеке» для локального извлечения данных или добавьте ключ в .env и перезапустите сервисы."
+            answer = f"Агент пока не может обратиться к модели: {self.models.configuration_error}. После замены ключа перезапустите API и worker."
             return self._complete(run, answer)
         messages: list[dict] = [{"role": "system", "content": SYSTEM}] + [
             {"role": item.role, "content": item.content} for item in thread_messages
