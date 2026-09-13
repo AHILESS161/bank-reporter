@@ -32,6 +32,10 @@ services:
     environment:
       DATA_DIR: /data
       PORT: 8787
+      # The container is isolated from the host; bind on its bridge interface
+      # so the API container can reach it. Desktop packaging overrides this
+      # with 127.0.0.1 in apps/desktop/main.mjs.
+      HOST: 0.0.0.0
     volumes:
       - artifacts:/data
       - ./certs:/usr/local/share/ca-certificates/local:ro

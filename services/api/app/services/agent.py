@@ -57,6 +57,53 @@ ANALYSIS_NEGATION_RE = re.compile(
 )
 
 
+# Official disclosure entry points used when the homepage returned by the CBR
+# directory is stale or too generic. These URLs remain ordinary provenance;
+# they do not bypass normal network validation.
+OFFICIAL_DISCLOSURE_ENTRYPOINTS: dict[str, tuple[str, ...]] = {
+    "2673": (
+        "https://www.tbank.ru/about/investors/11/",
+        "https://t-technologies.ru/results/",
+        "https://t-technologies.ru/press-releases/",
+    ),
+}
+
+
+TOOL_CALL_LIMITS = {
+    "resolve_bank": 2,
+    "discover_documents": 3,
+    "list_documents": 2,
+    "search_articles": 3,
+    "search_professional_reports": 2,
+    "read_article": 4,
+    "download_document": 4,
+    "fetch_cbr_form": 2,
+    "query_financial_facts": 3,
+    "read_document": 4,
+    "create_report": 1,
+}
+
+
+class ToolCallGuard:
+    """Prevent an orchestration model from spending a run on retries."""
+
+    def __init__(self, limits: dict[str, int] | None = None):
+        self.limits = limits or TOOL_CALL_LIMITS
+        self.counts: dict[str, int] = {}
+        self.signatures: set[str] = set()
+
+    def reject_reason(self, name: str, arguments: dict) -> str | None:
+        signature = f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)}"
+        if signature in self.signatures:
+            return "Этот же вызов уже выполнялся. Используйте имеющиеся результаты и сформируйте ответ."
+        limit = self.limits.get(name, 4)
+        if self.counts.get(name, 0) >= limit:
+            return f"Лимит вызовов {name} исчерпан. Используйте уже найденные данные и сформируйте ответ."
+        self.signatures.add(signature)
+        self.counts[name] = self.counts.get(name, 0) + 1
+        return None
+
+
 def requests_analysis(text: str) -> bool:
     return not ANALYSIS_NEGATION_RE.search(text) and bool(ANALYSIS_REQUEST_RE.search(text))
 
@@ -71,6 +118,7 @@ class AgentService:
         self.sources: list[dict] = []
         self.professional_sources: list[dict] | None = None
         self.analysis_requested = False
+        self.tool_guard = ToolCallGuard()
         self.skills = build_skill_registry(self)
         stored = self.db.get(IntegrationState, "custom_workflows")
         custom_workflows = stored.value.get("items", []) if stored else []
@@ -111,7 +159,10 @@ class AgentService:
         messages: list[dict] = [{"role": "system", "content": system_prompt}] + [
             {"role": item.role, "content": item.content} for item in thread_messages
         ]
-        for step in range(self.settings.max_agent_steps):
+        # Reserve one model call for synthesis. The last call gets no tools, so
+        # it cannot start another search loop and must answer from the evidence.
+        research_steps = max(self.settings.max_agent_steps - 1, 0)
+        for step in range(research_steps):
             self.db.refresh(run)
             if run.cancel_requested:
                 return self._complete(run, "Запрос отменен пользователем.", "cancelled")
@@ -127,7 +178,11 @@ class AgentService:
             messages.append(assistant_message)
             for call in response.tool_calls:
                 args = json.loads(call.function.arguments or "{}")
-                result = self._tool(call.function.name, args)
+                rejected = self.tool_guard.reject_reason(call.function.name, args)
+                if rejected:
+                    result = self._blocked_tool(call.function.name, args, rejected)
+                else:
+                    result = self._tool(call.function.name, args)
                 messages.append(
                     {
                         "role": "tool",
@@ -135,9 +190,68 @@ class AgentService:
                         "content": json.dumps(result, ensure_ascii=False, default=str)[:100_000],
                     }
                 )
-        return self._complete(
-            run, "Достигнут безопасный лимит агентских шагов. Частичные результаты сохранены.", "partial"
+        return self._finalize_from_evidence(run, messages)
+
+    def _blocked_tool(self, name: str, args: dict, reason: str) -> dict:
+        record = ToolRun(
+            analysis_run_id=self.run_id,
+            name=name,
+            status="blocked",
+            arguments=args,
+            error=reason,
+            finished_at=datetime.now(timezone.utc),
         )
+        self.db.add(record)
+        self.db.commit()
+        self._event("status", {"message": reason, "tool": name})
+        return {"error": reason, "blocked": True}
+
+    def _finalize_from_evidence(self, run: AnalysisRun, messages: list[dict]) -> str:
+        self._event(
+            "status",
+            {"message": "Поиск завершён. Формирую итог по найденным данным без новых вызовов."},
+        )
+        final_instruction = {
+            "role": "system",
+            "content": (
+                "Это обязательный финальный шаг. Инструменты больше недоступны. "
+                "Сформируй содержательный ответ на исходный вопрос только по уже найденным данным. "
+                "Сначала прямо ответь на вопрос. Укажи самый свежий подтверждённый период и название "
+                "документа, если они установлены. Если полного файла нет, перечисли то, что удалось "
+                "подтвердить, и ясно обозначь ограничение. Не упоминай лимит шагов, имена инструментов, "
+                "UUID и внутренние ошибки. URL отдельно не печатай: интерфейс приложит источники."
+            ),
+        }
+        try:
+            response = self.models.chat([*messages, final_instruction])
+            answer = (response.content or "").strip()
+        except Exception:
+            answer = ""
+        if not answer:
+            answer = self._deterministic_partial_answer()
+        return self._complete(run, answer, "partial")
+
+    def _deterministic_partial_answer(self) -> str:
+        titles = [item.get("message", "").strip() for item in self.sources if item.get("message")]
+        unique_titles = list(dict.fromkeys(titles))[:6]
+        lines = [
+            "## Результат поиска",
+            "",
+            "Полностью подтвердить ответ по загруженному первоисточнику не удалось. "
+            "Ниже сохранены официальные материалы, найденные во время поиска.",
+        ]
+        if unique_titles:
+            lines.extend(["", "### Найденные материалы", ""])
+            lines.extend(f"- {title}" for title in unique_titles)
+        lines.extend(
+            [
+                "",
+                "### Ограничение",
+                "",
+                "Проверьте найденные документы в библиотеке; ссылки доступны в раскрывающемся блоке источников.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _tool(self, name: str, args: dict) -> dict | list:
         self._event("tool_started", {"name": name, "message": f"Выполняю: {name}"})
@@ -161,6 +275,9 @@ class AgentService:
     def tool_resolve_bank(self, query: str) -> list[dict]:
         found = CBRConnector().search_banks(query)
         for item in found:
+            current_entrypoints = OFFICIAL_DISCLOSURE_ENTRYPOINTS.get(item["cbr_reg_number"], ())
+            if current_entrypoints:
+                item["official_url"] = current_entrypoints[0]
             bank = self.db.get(Bank, item["cbr_reg_number"])
             if not bank:
                 bank = Bank(
@@ -193,29 +310,39 @@ class AgentService:
         self, bank_reg_number: str, document_type: str = "", period: str = ""
     ) -> list[dict]:
         bank = self.db.get(Bank, bank_reg_number)
-        if not bank or not bank.official_url:
+        if not bank:
+            return {"error": "Банк не найден"}
+        roots = list(OFFICIAL_DISCLOSURE_ENTRYPOINTS.get(bank_reg_number, ()))
+        if bank.official_url:
+            roots.append(bank.official_url)
+        roots = list(dict.fromkeys(url.rstrip("/") + "/" for url in roots if url))
+        if not roots:
             return {"error": "У банка не найден официальный URL"}
-        self.pages += 1
-        if self.pages > self.settings.max_web_pages:
-            return {"error": "Лимит веб-страниц исчерпан"}
-        direct: list[dict] = []
-        html = ""
-        try:
-            final_url, content = public_get(bank.official_url, timeout=30)
-            self._citation(f"Раздел отчетности — {bank.short_name or bank.name}", final_url)
-            html = content.decode("utf-8", errors="replace")
-            direct = discover_document_links(final_url, html, document_type or None, period or None)
-        except Exception:
-            final_url = bank.official_url
-        if direct:
-            for item in direct[:10]:
-                self._citation(item["title"], item["url"])
-            return direct
+
+        root_pages: list[tuple[str, str]] = []
+        for root_url in roots:
+            if self.pages >= self.settings.max_web_pages:
+                break
+            self.pages += 1
+            try:
+                final_url, content = public_get(root_url, timeout=30)
+                html = content.decode("utf-8", errors="replace")
+                root_pages.append((final_url, html))
+                self._citation(f"Официальный раздел отчетности — {bank.short_name or bank.name}", final_url)
+                direct = discover_document_links(
+                    final_url, html, document_type or None, period or None
+                )
+                if direct:
+                    for item in direct[:10]:
+                        self._citation(item["title"], item["url"])
+                    return direct
+            except Exception:
+                continue
 
         # Follow at most two same-domain disclosure subpages. Many bank sites
         # expose the standard and year as ordinary links or data-href selectors
         # before the actual PDF links appear.
-        if html:
+        for final_url, html in root_pages:
             origin_domain = domain_of(final_url)
             period_year = next(iter(re.findall(r"20\d{2}", period)), "")
             kind_value = document_type.casefold()
@@ -273,34 +400,45 @@ class AgentService:
 
         # Investor pages are often client-rendered. A domain-restricted browser
         # search is a safe read-only fallback and still keeps results official.
-        domain = domain_of(final_url)
-        query = " ".join(
-            part
-            for part in (
-                f"site:{domain}",
-                bank.short_name or bank.name,
-                document_type or "финансовая отчетность",
-                period,
+        found: list[dict] = []
+        seen_urls: set[str] = set()
+        domains = list(dict.fromkeys(domain_of(url) for url in roots))
+        for domain in domains:
+            if self.pages + 2 > self.settings.max_web_pages:
+                break
+            query = " ".join(
+                part
+                for part in (
+                    f"site:{domain}",
+                    bank.short_name or bank.name,
+                    document_type or "финансовая отчетность",
+                    period,
+                )
+                if part
             )
-            if part
-        )
-        self.pages += 2
-        results = BrowserClient().search_articles(query, limit=20, domains=[domain])
-        found = [
-            {
-                "title": item.title,
-                "url": item.url,
-                "reporting_standard": "ifrs"
-                if any(word in f"{item.title} {item.url}".casefold() for word in ("мсфо", "ifrs"))
-                else None,
-                "excerpt": item.excerpt,
-                "source_tier": "official_bank",
-            }
-            for item in results
-        ]
+            self.pages += 2
+            results = BrowserClient().search_articles(query, limit=20, domains=[domain])
+            for item in results:
+                if item.url in seen_urls:
+                    continue
+                seen_urls.add(item.url)
+                found.append(
+                    {
+                        "title": item.title,
+                        "url": item.url,
+                        "reporting_standard": "ifrs"
+                        if any(
+                            word in f"{item.title} {item.url}".casefold()
+                            for word in ("мсфо", "ifrs")
+                        )
+                        else None,
+                        "excerpt": item.excerpt,
+                        "source_tier": "official_bank",
+                    }
+                )
         for item in found[:10]:
             self._citation(item["title"], item["url"])
-        return found
+        return found[:50]
 
     def tool_download_document(
         self, url: str, title: str, bank_reg_number: str | None = None, document_type: str = "other"

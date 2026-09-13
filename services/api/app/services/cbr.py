@@ -432,8 +432,26 @@ def discover_document_links(
     period_token = period_match.group(0) if period_match else (period or "").casefold()
     for link in soup.select("a[href]"):
         href = urljoin(page_url, link.get("href", ""))
-        label = link.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-        combined = f"{label} {href} {page_url}".casefold()
+        own_label = link.get_text(" ", strip=True)
+        context_parts: list[str] = []
+        parent = link.parent
+        for _ in range(3):
+            if parent is None:
+                break
+            parent_text = parent.get_text(" ", strip=True)
+            if parent_text and len(parent_text) <= 1_500:
+                context_parts.append(parent_text)
+            parent = parent.parent
+        contextual_label = next(
+            (
+                value
+                for value in context_parts
+                if value.casefold() not in {"pdf", "скачать", "download"} and len(value) > 3
+            ),
+            "",
+        )
+        label = own_label or contextual_label or href.rsplit("/", 1)[-1]
+        combined = f"{label} {' '.join(context_parts)} {href} {page_url}".casefold()
         is_file_route = bool(re.search(r"/file/[0-9a-f-]{20,}(?:$|[?#])", href, re.I))
         if not is_file_route and not re.search(r"\.(pdf|xlsx?|csv|zip|dbf)(?:$|\?)", href, re.I):
             continue

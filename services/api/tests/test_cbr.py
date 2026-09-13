@@ -74,6 +74,24 @@ def test_document_discovery_supports_extensionless_disclosure_pdf_routes():
     ]
 
 
+def test_document_discovery_uses_nearby_title_for_icon_only_pdf_link():
+    html = """
+    <article>
+      <time>11 августа 2026</time>
+      <div>
+        <span>Финансовые результаты по МСФО за II квартал 2026 года</span>
+        <a href="https://cdn.bank.example/result.pdf" aria-label="pdf"></a>
+      </div>
+    </article>
+    """
+    result = discover_document_links(
+        "https://bank.example/press-releases/", html, "МСФО", "2026"
+    )
+    assert result
+    assert result[-1]["title"] == "Финансовые результаты по МСФО за II квартал 2026 года"
+    assert result[-1]["reporting_standard"] == "ifrs"
+
+
 def test_published_key_rate_decision_date_is_extracted():
     html = """<main>Совет директоров Банка России 11 сентября 2026 года
     принял решение сохранить ключевую ставку.</main>"""
