@@ -1,5 +1,17 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
+
+report_build_error() {
+  local status="$1"
+  local line="$2"
+  local command="$3"
+  command="${command//%/%25}"
+  command="${command//:/%3A}"
+  echo "::error title=Desktop build failed::line $line, exit $status, command $command"
+  exit "$status"
+}
+
+trap 'report_build_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_DIR="$PROJECT_DIR/apps/desktop/.runtime"
@@ -20,6 +32,60 @@ npm --prefix apps/web ci --ignore-scripts
 cp -R apps/web/.next/standalone/. "$RUNTIME_DIR/web/"
 cp -R apps/web/.next/static "$RUNTIME_DIR/web/.next/static"
 cp -R apps/web/public "$RUNTIME_DIR/web/public"
+
+# electron-builder deliberately filters nested directories named node_modules
+# from extraResources. Preserve Next's traced standalone dependencies under a
+# neutral name and expose them to Node through NODE_PATH at runtime.
+test -f "$RUNTIME_DIR/web/node_modules/next/package.json"
+rm -rf "$RUNTIME_DIR/web/modules"
+mv "$RUNTIME_DIR/web/node_modules" "$RUNTIME_DIR/web/modules"
+test -f "$RUNTIME_DIR/web/modules/next/package.json"
+
+echo "Smoke-testing packaged Next.js frontend"
+WEB_SMOKE_DIR="$(mktemp -d)"
+WEB_SMOKE_PORT=53190
+WEB_SMOKE_LOG="$WEB_SMOKE_DIR/web.log"
+WEB_SMOKE_PID=""
+cleanup_web_smoke() {
+  if [[ -n "$WEB_SMOKE_PID" ]] && kill -0 "$WEB_SMOKE_PID" 2>/dev/null; then
+    kill "$WEB_SMOKE_PID" 2>/dev/null || true
+    wait "$WEB_SMOKE_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WEB_SMOKE_DIR"
+}
+trap cleanup_web_smoke EXIT
+(
+  cd "$RUNTIME_DIR/web"
+  NODE_PATH="$RUNTIME_DIR/web/modules" \
+    HOSTNAME=127.0.0.1 \
+    PORT="$WEB_SMOKE_PORT" \
+    NODE_ENV=production \
+    node server.js
+) >"$WEB_SMOKE_LOG" 2>&1 &
+WEB_SMOKE_PID=$!
+WEB_SMOKE_READY=0
+for _ in {1..60}; do
+  if ! kill -0 "$WEB_SMOKE_PID" 2>/dev/null; then
+    echo "Packaged web server exited during smoke test"
+    cat "$WEB_SMOKE_LOG"
+    exit 1
+  fi
+  if curl --fail --silent "http://127.0.0.1:$WEB_SMOKE_PORT" >/dev/null; then
+    WEB_SMOKE_READY=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$WEB_SMOKE_READY" != "1" ]]; then
+  echo "Packaged web server did not become healthy"
+  cat "$WEB_SMOKE_LOG"
+  exit 1
+fi
+kill "$WEB_SMOKE_PID" 2>/dev/null || true
+wait "$WEB_SMOKE_PID" 2>/dev/null || true
+WEB_SMOKE_PID=""
+trap - EXIT
+rm -rf "$WEB_SMOKE_DIR"
 
 echo "Building local FastAPI sidecar"
 python3 -m pip install --upgrade pip
@@ -87,8 +153,15 @@ cp -R services/browser/node_modules "$RUNTIME_DIR/browser/node_modules"
   cd "$RUNTIME_DIR/browser"
   PLAYWRIGHT_BROWSERS_PATH="$RUNTIME_DIR/browsers" ./node_modules/.bin/agent-browser install
 )
+tar -czf "$RUNTIME_DIR/browser/node-modules.tar.gz" -C "$RUNTIME_DIR/browser" node_modules
+rm -rf "$RUNTIME_DIR/browser/node_modules"
 cp -R third_party/lieflat-charts "$RUNTIME_DIR/lieflat-charts"
 
 echo "Building unsigned macOS DMG for Apple Silicon ($ARCH)"
 npm --prefix apps/desktop ci
 npm --prefix apps/desktop run dist -- --mac dmg "--$ARCH"
+
+echo "Smoke-testing the mounted DMG"
+DMG_PATH="$(find apps/desktop/dist -maxdepth 1 -type f -name "Bank-Reporter-*-$ARCH.dmg" -print -quit)"
+test -n "$DMG_PATH"
+bash scripts/smoke-test-macos-dmg.sh "$DMG_PATH"
