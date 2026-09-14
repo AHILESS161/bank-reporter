@@ -1,5 +1,6 @@
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
@@ -33,10 +34,23 @@ class BrowserClient:
 
     def read(self, url: str) -> str:
         validate_public_url(url)
-        with httpx.Client(timeout=130) as client:
+        with httpx.Client(timeout=75) as client:
             response = client.post(f"{self.settings.browser_service_url}/read", json={"url": url})
             response.raise_for_status()
             return response.json().get("content", "")
+
+    def link_snapshot(self, url: str) -> str:
+        """Return a rendered, read-only accessibility snapshot with link URLs."""
+        validate_public_url(url)
+        with httpx.Client(timeout=75) as client:
+            response = client.post(f"{self.settings.browser_service_url}/links", json={"url": url})
+            response.raise_for_status()
+            raw = response.json().get("content", "")
+        try:
+            payload = json.loads(raw)
+            return payload.get("data", {}).get("snapshot", "") or raw
+        except (json.JSONDecodeError, AttributeError):
+            return raw
 
     def read_article(self, url: str) -> dict:
         """Return bounded, inert page content for the agent to summarize."""
@@ -87,7 +101,7 @@ class BrowserClient:
         articles: list[Article] = []
         for engine in ("yandex", "bing"):
             try:
-                with httpx.Client(timeout=130) as client:
+                with httpx.Client(timeout=75) as client:
                     response = client.post(
                         f"{self.settings.browser_service_url}/search",
                         json={"query": search_query, "engine": engine},
@@ -110,8 +124,11 @@ class BrowserClient:
             if len(articles) >= limit:
                 break
         ordered = sorted(articles, key=lambda item: item.score, reverse=True)[: min(limit, 25)]
-        for article in ordered:
-            self._enrich(article)
+        # Metadata/excerpt requests are independent. Running a bounded batch in
+        # parallel avoids turning 20 sources into 20 sequential network waits.
+        # Eight enriched results are enough for the model; the remaining links
+        # are still returned with search-engine titles and snippets.
+        self._enrich_many(ordered)
         query_tokens = self._query_tokens(query)
         return [
             item
@@ -301,6 +318,14 @@ class BrowserClient:
                 article.excerpt = re.sub(r"\s+", " ", extracted).strip()[:500]
         except Exception:
             return
+
+    @classmethod
+    def _enrich_many(cls, articles: list[Article], limit: int = 8) -> None:
+        enrich_batch = articles[:limit]
+        if not enrich_batch:
+            return
+        with ThreadPoolExecutor(max_workers=min(6, len(enrich_batch))) as executor:
+            list(executor.map(cls._enrich, enrich_batch))
 
     def render(self, html_path: str, pdf_path: str | None, png_path: str | None) -> dict:
         with httpx.Client(timeout=180) as client:

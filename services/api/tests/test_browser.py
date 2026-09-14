@@ -1,6 +1,6 @@
 import json
 
-from app.services.browser import BrowserClient
+from app.services.browser import Article, BrowserClient
 
 
 def test_structured_search_filters_unrelated_and_deduplicates():
@@ -37,3 +37,16 @@ def test_bing_rss_is_parsed_as_inert_structured_data():
     results = BrowserClient()._parse_search(raw, set(), set(), [], "Сбер отчетность")
     assert results[0].title == "Сбер опубликовал отчетность"
     assert results[0].excerpt == "Краткое описание результата."
+
+
+def test_article_enrichment_is_bounded(monkeypatch):
+    enriched: list[str] = []
+    monkeypatch.setattr(BrowserClient, "_enrich", lambda article: enriched.append(article.url))
+    articles = [
+        Article(str(index), f"https://example.com/{index}", "example.com", "", "other", 1)
+        for index in range(12)
+    ]
+
+    BrowserClient._enrich_many(articles)
+
+    assert len(enriched) == 8

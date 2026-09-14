@@ -65,18 +65,58 @@ async function run(args, timeout = 120_000) {
   return { stdout, stderr };
 }
 
+function launchOptions() {
+  return /^(1|true|yes)$/i.test(process.env.AGENT_BROWSER_IGNORE_HTTPS_ERRORS ?? "")
+    ? ["--ignore-https-errors"]
+    : [];
+}
+
 async function readPage(payload) {
   const url = await publicUrl(payload.url);
   const session = `br-${crypto.randomUUID()}`;
   const allowed = [url.hostname, ...(payload.allowed_domains ?? [])].join(",");
+  const policy = ["--namespace", session, "--action-policy", path.resolve("action-policy.json")];
   try {
+    let result;
+    try {
+      result = await run([
+        ...policy, "--json", "--content-boundaries", "--max-output", "100000",
+        "--allowed-domains", allowed, "read", url.href,
+      ]);
+    } catch {
+      // `read <url>` is an HTTP/Markdown fast path. Some public sites reject it
+      // while rendering normally in Chromium; use the active DOM without eval.
+      await run([...policy, ...launchOptions(), "--allowed-domains", allowed, "open", url.href]);
+      await run([...policy, "wait", "1500"], 15_000).catch(() => undefined);
+      result = await run([
+        ...policy, "--json", "--content-boundaries", "--max-output", "100000", "read",
+      ]);
+    }
+    return { url: url.href, content: result.stdout, diagnostics: result.stderr };
+  } finally {
+    await run([...policy, "close"], 15_000).catch(() => undefined);
+  }
+}
+
+async function linkSnapshot(payload) {
+  const url = await publicUrl(payload.url);
+  const session = `links-${crypto.randomUUID()}`;
+  const allowed = [url.hostname, ...(payload.allowed_domains ?? [])].join(",");
+  const policy = ["--namespace", session, "--action-policy", path.resolve("action-policy.json")];
+  try {
+    await run([
+      ...policy, ...launchOptions(), "--allowed-domains", allowed,
+      "open", url.href,
+    ]);
+    // A short bounded wait lets client-rendered document catalogues populate.
+    await run([...policy, "wait", "1500"], 15_000).catch(() => undefined);
     const result = await run([
-      "--namespace", session, "--json", "--content-boundaries", "--max-output", "100000",
-      "--allowed-domains", allowed, "--action-policy", path.resolve("action-policy.json"), "read", url.href,
+      ...policy, "--json", "--content-boundaries", "--max-output", "200000",
+      "snapshot", "-i", "-c", "--urls",
     ]);
     return { url: url.href, content: result.stdout, diagnostics: result.stderr };
   } finally {
-    await run(["--namespace", session, "--action-policy", path.resolve("action-policy.json"), "close"], 15_000).catch(() => undefined);
+    await run([...policy, "close"], 15_000).catch(() => undefined);
   }
 }
 
@@ -88,10 +128,18 @@ async function search(payload) {
     // RSS contains exact result URLs as inert XML. The browser remains locked
     // to bing.com and never navigates to a result while collecting the list.
     : `https://www.bing.com/news/search?format=rss&q=${encodeURIComponent(query)}&setlang=ru-ru&cc=RU&mkt=ru-RU`;
-  return { engine, ...(await readPage({
+  const request = {
     url,
     allowed_domains: engine === "yandex" ? ["yandex.ru", "yandex.com"] : ["bing.com"],
-  })) };
+  };
+  if (engine === "yandex") {
+    try {
+      return { engine, ...(await linkSnapshot(request)) };
+    } catch {
+      return { engine, ...(await readPage(request)) };
+    }
+  }
+  return { engine, ...(await readPage(request)) };
 }
 
 async function render(payload) {
@@ -120,6 +168,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== "POST") return json(res, 404, { error: "not_found" });
     const payload = await body(req);
     if (req.url === "/read") return json(res, 200, await readPage(payload));
+    if (req.url === "/links") return json(res, 200, await linkSnapshot(payload));
     if (req.url === "/search") return json(res, 200, await search(payload));
     if (req.url === "/render") return json(res, 200, await render(payload));
     return json(res, 404, { error: "not_found" });

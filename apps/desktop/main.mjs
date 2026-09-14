@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const API_PORT = 53111;
@@ -14,25 +14,61 @@ function resource(...parts) {
 }
 
 function startProcess(name, command, args, options, logDir) {
-  const log = createWriteStream(path.join(logDir, `${name}.log`), { flags: "a" });
+  const logPath = path.join(logDir, `${name}.log`);
+  const log = createWriteStream(logPath, { flags: "w" });
   const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.pipe(log);
   child.stderr.pipe(log);
+  child.serviceName = name;
+  child.logPath = logPath;
+  child.startupError = null;
+  child.recentOutput = "";
+  const remember = (chunk) => {
+    child.recentOutput = `${child.recentOutput}${chunk}`.slice(-12000);
+  };
+  child.stdout.on("data", remember);
+  child.stderr.on("data", remember);
+  child.on("error", (error) => {
+    child.startupError = error;
+    log.write(`\n${error.stack || error}\n`);
+  });
   children.push(child);
   return child;
+}
+
+function logTail(logPath, maxLines = 35) {
+  try {
+    return readFileSync(logPath, "utf8").split(/\r?\n/).slice(-maxLines).join("\n").trim();
+  } catch {
+    return "Журнал процесса пока пуст.";
+  }
+}
+
+function processDetails(child) {
+  return child.recentOutput.trim() || logTail(child.logPath);
 }
 
 async function waitFor(url, child, timeoutMs = 120000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (child.exitCode !== null) throw new Error(`Процесс завершился с кодом ${child.exitCode}`);
+    if (child.startupError) {
+      throw new Error(`${child.serviceName}: ${child.startupError.message}\n\n${processDetails(child)}`);
+    }
+    if (child.exitCode !== null) {
+      throw new Error(
+        `${child.serviceName}: процесс завершился с кодом ${child.exitCode}\n\n${processDetails(child)}`,
+      );
+    }
     try {
       const response = await fetch(url);
       if (response.ok) return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 600));
   }
-  throw new Error(`Сервис не запустился за ${Math.round(timeoutMs / 1000)} секунд`);
+  throw new Error(
+    `${child.serviceName}: сервис не запустился за ${Math.round(timeoutMs / 1000)} секунд\n\n`
+      + processDetails(child),
+  );
 }
 
 function apiExecutable() {
@@ -137,7 +173,18 @@ function stopChildren() {
   }
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
+app.on("second-instance", () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   try {
     await startApplication();
   } catch (error) {

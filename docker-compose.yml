@@ -36,6 +36,9 @@ services:
       # so the API container can reach it. Desktop packaging overrides this
       # with 127.0.0.1 in apps/desktop/main.mjs.
       HOST: 0.0.0.0
+      # Optional workaround for local antivirus/corporate HTTPS interception.
+      # It is disabled by default and never enabled in packaged builds.
+      AGENT_BROWSER_IGNORE_HTTPS_ERRORS: ${AGENT_BROWSER_IGNORE_HTTPS_ERRORS:-0}
     volumes:
       - artifacts:/data
       - ./certs:/usr/local/share/ca-certificates/local:ro

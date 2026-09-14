@@ -34,6 +34,51 @@ python3 -m PyInstaller --noconfirm --clean --onedir \
   --specpath "$PROJECT_DIR/.runtime" \
   services/api/desktop_entry.py
 
+echo "Smoke-testing packaged FastAPI sidecar"
+SMOKE_DIR="$(mktemp -d)"
+SMOKE_PORT=53191
+SMOKE_LOG="$SMOKE_DIR/api.log"
+SMOKE_PID=""
+cleanup_smoke() {
+  if [[ -n "$SMOKE_PID" ]] && kill -0 "$SMOKE_PID" 2>/dev/null; then
+    kill "$SMOKE_PID" 2>/dev/null || true
+    wait "$SMOKE_PID" 2>/dev/null || true
+  fi
+  rm -rf "$SMOKE_DIR"
+}
+trap cleanup_smoke EXIT
+ENVIRONMENT=test \
+TASK_BACKEND=local \
+DATA_DIR="$SMOKE_DIR/data" \
+DATABASE_URL="sqlite:///$SMOKE_DIR/bank-reporter.sqlite3" \
+HOST=127.0.0.1 \
+PORT="$SMOKE_PORT" \
+"$RUNTIME_DIR/api/bank-reporter-api/bank-reporter-api" >"$SMOKE_LOG" 2>&1 &
+SMOKE_PID=$!
+SMOKE_READY=0
+for _ in {1..60}; do
+  if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+    echo "Packaged API exited during smoke test"
+    cat "$SMOKE_LOG"
+    exit 1
+  fi
+  if curl --fail --silent "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null; then
+    SMOKE_READY=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$SMOKE_READY" != "1" ]]; then
+  echo "Packaged API did not become healthy"
+  cat "$SMOKE_LOG"
+  exit 1
+fi
+kill "$SMOKE_PID" 2>/dev/null || true
+wait "$SMOKE_PID" 2>/dev/null || true
+SMOKE_PID=""
+trap - EXIT
+rm -rf "$SMOKE_DIR"
+
 echo "Preparing agent-browser and Chromium"
 npm --prefix services/browser ci
 cp services/browser/server.mjs services/browser/action-policy.json services/browser/package.json "$RUNTIME_DIR/browser/"

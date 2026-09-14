@@ -76,6 +76,20 @@ class WorkflowRegistry:
                 return workflow
         if analysis_requested:
             return self.get("financial_analysis")
+        if any(
+            token in text
+            for token in (
+                "отчёт",
+                "отчет",
+                "отчётност",
+                "отчетност",
+                "мсфо",
+                "рсбу",
+                "форма 101",
+                "форма 102",
+            )
+        ):
+            return self.get("document_discovery")
         if any(token in text for token in ("стать", "новост", "публикац", "сми", "пресс-релиз")):
             return self.get("article_research")
         return self.get("document_discovery")

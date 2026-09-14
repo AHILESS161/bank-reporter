@@ -80,6 +80,11 @@ def test_workflow_registry_routes_and_rejects_cycles():
     skills = build_skill_registry(Host())
     workflows = build_workflow_registry(skills)
     assert workflows.route("Найди МСФО").id == "document_discovery"
+    assert (
+        workflows.route("Найди отчётность РСБУ, иначе официальную публикацию").id
+        == "document_discovery"
+    )
+    assert workflows.route("Найди публикации по качеству кредитов").id == "article_research"
     assert workflows.route("Сравни два периода", analysis_requested=True).id == "financial_analysis"
     financial = workflows.get("financial_analysis")
     assert any(node.skill_id == "search_professional_reports" for node in financial.nodes)
