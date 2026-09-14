@@ -32,9 +32,20 @@ jobs:
           cache: pip
           cache-dependency-path: services/api/pyproject.toml
       - name: Build DMG
-        run: bash scripts/build-macos-desktop.sh
+        run: |
+          set -o pipefail
+          bash scripts/build-macos-desktop.sh 2>&1 | tee desktop-build.log
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Report desktop build failure
+        if: failure()
+        run: |
+          tail -n 25 desktop-build.log | while IFS= read -r line; do
+            line="${line//'%'/'%25'}"
+            line="${line//$'\r'/'%0D'}"
+            line="${line//$'\n'/'%0A'}"
+            echo "::error title=Desktop build log::$line"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: Bank-Reporter-macOS-arm64
