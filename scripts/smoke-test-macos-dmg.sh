@@ -25,9 +25,26 @@ fail_with_log() {
   echo "$name failed to start from the mounted DMG"
   if [[ -f "$log" ]]; then
     cat "$log"
+    local summary
+    summary="$(tail -n 30 "$log" | tr '\r\n' '  ' | sed 's/%/%25/g; s/:/%3A/g')"
+    echo "::error title=$name failed::$summary"
+  else
+    echo "::error title=$name failed::No process log was created"
   fi
   exit 1
 }
+
+report_error() {
+  local status="$1"
+  local line="$2"
+  local command="$3"
+  command="${command//%/%25}"
+  command="${command//:/%3A}"
+  echo "::error title=DMG smoke test failed::line $line, exit $status, command $command"
+  exit "$status"
+}
+
+trap 'report_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 require_file() {
   local file="$1"
