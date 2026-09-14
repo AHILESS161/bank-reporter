@@ -2,7 +2,7 @@
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
-type Tab = "chat" | "constructor" | "calendar" | "library" | "reports" | "watchlist" | "settings";
+type Tab = "chat" | "commands" | "calendar" | "library" | "reports" | "watchlist" | "settings";
 type Appearance = "classic" | "meow";
 type Citation = { message: string; url: string; document_id?: string };
 type Message = { id: string; role: "user" | "assistant"; content: string; citations?: Citation[]; created_at?: string };
@@ -27,7 +27,7 @@ const appearanceStorageKey = "bank-reporter-appearance";
 
 const tabs: { id: Tab; label: string; symbol: string }[] = [
   { id: "chat", label: "Чат", symbol: "↗" },
-  { id: "constructor", label: "Конструктор", symbol: "◇" },
+  { id: "commands", label: "Возможности", symbol: "?" },
   { id: "calendar", label: "Календарь", symbol: "□" },
   { id: "library", label: "Библиотека", symbol: "≡" },
   { id: "reports", label: "Отчеты", symbol: "◫" },
@@ -52,6 +52,20 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 
 function Status({ value }: { value: string }) {
   return <span className={`status status-${value}`}>{value}</span>;
+}
+
+function ReportProgress({ status }: { status: string }) {
+  const queued = status === "queued";
+  return (
+    <div className="report-progress" role="progressbar" aria-label="Подготовка отчета" aria-valuetext={queued ? "Отчет ожидает запуска" : "Отчет формируется"}>
+      <div className="report-progress-copy">
+        <b>{queued ? "Ожидает запуска" : "Формируем отчет"}</b>
+        <span>{queued ? "Задание поставлено в очередь" : "Анализируем данные и собираем файлы"}</span>
+      </div>
+      <div className="report-progress-track" aria-hidden="true"><i /></div>
+      <small>Можно перейти в другой раздел — работа продолжится в фоне.</small>
+    </div>
+  );
 }
 
 function safeExternalUrl(value: string) {
@@ -157,8 +171,6 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState<string>();
   const [watchlist, setWatchlist] = useState<WatchItem[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus>();
-  const [skills, setSkills] = useState<SkillItem[]>([]);
-  const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -184,16 +196,14 @@ export default function Home() {
 
   const refresh = useCallback(async () => {
     try {
-      const [c, d, r, w, s, skillItems, workflowItems] = await Promise.all([
+      const [c, d, r, w, s] = await Promise.all([
         api<CalendarEvent[]>("/api/calendar"),
         api<DocumentItem[]>("/api/documents"),
         api<ReportItem[]>("/api/reports"),
         api<WatchItem[]>("/api/watchlist"),
         api<SystemStatus>("/api/settings/status"),
-        api<SkillItem[]>("/api/skills"),
-        api<WorkflowItem[]>("/api/workflows"),
       ]);
-      setCalendar(c); setDocuments(d); setReports(r); setWatchlist(w); setSystemStatus(s); setSkills(skillItems); setWorkflows(workflowItems);
+      setCalendar(c); setDocuments(d); setReports(r); setWatchlist(w); setSystemStatus(s);
     } catch { /* API may still be starting. */ }
   }, []);
 
@@ -349,6 +359,10 @@ export default function Home() {
   };
 
   const title = useMemo(() => tabs.find((item) => item.id === tab)?.label, [tab]);
+  const useCommand = useCallback((value: string) => {
+    setPrompt(value);
+    setTab("chat");
+  }, []);
 
   return (
     <main className="shell" data-theme={appearance}>
@@ -373,11 +387,10 @@ export default function Home() {
           <aside className="context">
             <div className="chat-history-head"><h3>Сохраненные чаты</h3><button disabled={busy} onClick={newThread}>+ Новый</button></div>
             <div className="chat-history">{threads.length ? threads.map((thread) => <div key={thread.id} className={`chat-history-item ${thread.id === threadId ? "active" : ""}`}><button className="chat-history-open" disabled={busy || threadLoading} onClick={() => void openThread(thread.id)}><b>{thread.title}</b><small>{new Date(thread.updated_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</small></button><button className="chat-history-delete" disabled={busy || threadLoading || deletingId === thread.id} title="Удалить чат" aria-label={`Удалить чат ${thread.title}`} onClick={() => void deleteThreadItem(thread)}>{deletingId === thread.id ? "…" : "Удалить"}</button></div>) : <p>История появится после первого запроса.</p>}</div>
-            <h3>Быстрый старт</h3>{["Найди последнюю МСФО Сбера", "Что изменилось в ставке ЦБ?", "Статьи о качестве кредитов", "Сравни два отчетных периода"].map((q) => <button key={q} onClick={() => setPrompt(q)}>{q}</button>)}<h3>Состояние</h3><dl><div><dt>Документы</dt><dd>{documents.length}</dd></div><div><dt>Отчеты</dt><dd>{reports.length}</dd></div><div><dt>События</dt><dd>{calendar.length}</dd></div></dl>
           </aside>
         </div>}
 
-        {tab === "constructor" && <WorkflowConstructor skills={skills} workflows={workflows} onChanged={refresh} />}
+        {tab === "commands" && <CommandGuide onUse={useCommand} />}
 
         {tab === "calendar" && <Panel title="Календарь банковских событий" action={<a href="/api/calendar.ics">Экспортировать ICS</a>}><CalendarMonth events={calendar} /></Panel>}
 
@@ -386,7 +399,7 @@ export default function Home() {
         {tab === "reports" && <Panel title="Отчеты">
           {error && <div className="error">{error}</div>}
           <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">ОРИГИНАЛЫ</p><h3>Найденные PDF-отчеты</h3></div><span>Анализ запускается только по вашему запросу</span></div><div className="cards">{documents.filter((item) => item.previewable).length ? documents.filter((item) => item.previewable).map((item) => <article className="report-card source-report-card" key={item.id}><p>PDF / {item.reporting_standard ?? item.document_type} / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3><span className="report-summary">Оригинал сохранен без изменений · {item.size_bytes ? formatBytes(item.size_bytes) : "размер уточняется"}</span><Status value={item.status} /><div className="report-actions"><button onClick={() => setPreviewDocument(item)}>Предпросмотр</button><button className="analyze-button" disabled={analysisDocumentId === item.id} onClick={() => void analyzeDocument(item)}>{analysisDocumentId === item.id ? "Запускаю…" : "Проанализировать"}</button><a href={`/api/documents/${item.id}/download`}>Скачать PDF</a><button className="delete-button" disabled={deletingId === item.id} onClick={() => void deleteDocumentItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div>{item.source_url && <details className="card-source"><summary>Первоисточник</summary><a href={safeExternalUrl(item.source_url)} target="_blank" rel="noreferrer">Открыть официальный источник ↗</a></details>}</article>) : <Empty text="Попросите агента найти отчет или загрузите PDF в библиотеке." />}</div></section>
-          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">АНАЛИТИКА</p><h3>Подготовленные аналитические отчеты</h3></div><span>HTML-предпросмотр и выгрузки</span></div><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); const processing = item.status === "queued" || item.status === "processing"; return <article className="report-card" key={item.id}><p>ANALYSIS / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} /><div className="report-actions"><button disabled={!hasPreview || processing} onClick={() => setPreviewReport(item)}>{processing ? "Готовится…" : "Предпросмотр"}</button><button className="analyze-button" disabled={processing || rebuildingReportId === item.id} onClick={() => void rebuildReport(item)}>{rebuildingReportId === item.id ? "Запускаю…" : "Пересобрать"}</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}<button className="delete-button" disabled={processing || deletingId === item.id} title={processing ? "Удаление доступно после завершения" : "Удалить отчет"} onClick={() => void deleteReportItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div></article>; }) : <Empty text="Выберите PDF выше и нажмите «Проанализировать» или попросите об анализе в чате." />}</div></section>
+          <section className="report-section"><div className="report-section-head"><div><p className="eyebrow">АНАЛИТИКА</p><h3>Подготовленные аналитические отчеты</h3></div><span>HTML-предпросмотр и выгрузки</span></div><div className="cards">{reports.length ? reports.map((item) => { const hasPreview = item.artifacts?.some((artifact) => artifact.format === "html"); const processing = item.status === "queued" || item.status === "processing"; return <article className="report-card" key={item.id}><p>ANALYSIS / {new Date(item.created_at).toLocaleDateString("ru-RU")}</p><h3>{item.title}</h3>{item.summary && <span className="report-summary">{item.summary}</span>}<Status value={item.status} />{processing && <ReportProgress status={item.status} />}<div className="report-actions"><button disabled={!hasPreview || processing} onClick={() => setPreviewReport(item)}>{processing ? "Готовится…" : "Предпросмотр"}</button><button className="analyze-button" disabled={processing || rebuildingReportId === item.id} onClick={() => void rebuildReport(item)}>{rebuildingReportId === item.id ? "Запускаю…" : "Пересобрать"}</button><span>Скачать:</span>{item.artifacts?.filter((artifact) => artifact.format !== "html").map((artifact) => <a key={artifact.id} href={`/api/artifacts/${artifact.id}/download`}>{artifact.format.toUpperCase()}</a>)}<button className="delete-button" disabled={processing || deletingId === item.id} title={processing ? "Удаление доступно после завершения" : "Удалить отчет"} onClick={() => void deleteReportItem(item)}>{deletingId === item.id ? "Удаляю…" : "Удалить"}</button></div></article>; }) : <Empty text="Выберите PDF выше и нажмите «Проанализировать» или попросите об анализе в чате." />}</div></section>
           {previewReport && <ReportPreview report={previewReport} onClose={() => setPreviewReport(undefined)} />}{previewDocument && <DocumentPreview document={previewDocument} onClose={() => setPreviewDocument(undefined)} />}
         </Panel>}
 
@@ -400,6 +413,73 @@ export default function Home() {
 
 function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) { return <section className="panel"><div className="panel-head"><h2>{title}</h2>{action}</div>{children}</section>; }
 function Empty({ text }: { text: string }) { return <div className="empty"><span>∅</span><p>{text}</p></div>; }
+
+const commandExamples = [
+  {
+    verb: "Найди",
+    title: "Найти первоисточник",
+    description: "Агент найдёт официальный раздел банка и подходящий документ, но не будет создавать аналитический отчёт.",
+    result: "Ссылки на найденные документы",
+    example: "Найди последнюю отчетность Т-Банка по МСФО за 2025 год",
+  },
+  {
+    verb: "Скачай",
+    title: "Сохранить оригинал",
+    description: "Агент найдёт файл, проверит адрес и сохранит оригинальный PDF или таблицу в локальной библиотеке.",
+    result: "Оригинал в «Библиотеке» и «Отчётах»",
+    example: "Скачай годовую отчетность ВТБ по МСФО за 2025 год",
+  },
+  {
+    verb: "Проанализируй",
+    title: "Разобрать показатели",
+    description: "Агент извлечёт подтверждаемые цифры, рассчитает динамику и подготовит отдельный аналитический отчёт.",
+    result: "HTML-предпросмотр, PDF, PNG, XLSX и CSV",
+    example: "Найди и проанализируй отчетность МКБ по МСФО за 2025 год",
+  },
+  {
+    verb: "Сравни",
+    title: "Сопоставить периоды или банки",
+    description: "Для сравнения будут использованы одинаковые показатели и единицы измерения; результат получит сравнительный график.",
+    result: "Таблица изменений и графики динамики",
+    example: "Сравни чистую прибыль МКБ за 2024 и 2025 годы и построй график",
+  },
+  {
+    verb: "Найди статьи",
+    title: "Исследовать публикации",
+    description: "Агент найдёт профильные публикации по банку или теме, уберёт дубли и отделит официальные источники от СМИ.",
+    result: "Краткое резюме и скрываемый список ссылок",
+    example: "Найди статьи о качестве кредитного портфеля Совкомбанка за последние 6 месяцев",
+  },
+  {
+    verb: "Сделай справку",
+    title: "Получить короткий ответ",
+    description: "Подходит, когда нужен компактный фактологический материал без большого аналитического отчёта.",
+    result: "Короткая справка с таблицей и источниками",
+    example: "Сделай краткую справку о последних результатах ПСБ и укажи основные риски",
+  },
+] as const;
+
+function CommandGuide({ onUse }: { onUse: (value: string) => void }) {
+  return <Panel title="Что умеет агент">
+    <section className="commands-intro">
+      <div><p className="eyebrow">КАК СОСТАВИТЬ ЗАПРОС</p><h3>Действие + банк + документ или тема + период</h3><p>Например: <b>«Скачай МСФО ВТБ за 2025 год»</b>. Чем точнее указан период и ожидаемый результат, тем быстрее агент остановит поиск.</p></div>
+      <div className="command-formula"><span>Действие</span><i>+</i><span>Банк</span><i>+</i><span>Период</span><i>+</i><span>Результат</span></div>
+    </section>
+    <section className="command-difference" aria-label="Разница между командами">
+      <div><b>Найди</b><span>покажет, где лежит документ</span></div>
+      <div><b>Скачай</b><span>сохранит оригинал в сервисе</span></div>
+      <div><b>Проанализируй</b><span>извлечёт цифры и создаст новый отчёт</span></div>
+    </section>
+    <div className="command-grid">{commandExamples.map((item) => <article className="command-card" key={item.verb}>
+      <span className="command-verb">{item.verb}</span>
+      <h3>{item.title}</h3>
+      <p>{item.description}</p>
+      <dl><dt>Результат</dt><dd>{item.result}</dd></dl>
+      <button type="button" onClick={() => onUse(item.example)}><span>Попробовать</span><small>{item.example}</small></button>
+    </article>)}</div>
+    <aside className="commands-note"><b>Важно</b><p>Слово «скачай» сохраняет найденный оригинал, но не запускает анализ. Для графиков, расчётов и аналитического отчёта прямо напишите «проанализируй», «сравни» или «построй график».</p></aside>
+  </Panel>;
+}
 
 function SettingsView({ status, onChanged }: { status?: SystemStatus; onChanged: () => Promise<void> }) {
   const [modelKey, setModelKey] = useState("");

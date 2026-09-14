@@ -1,9 +1,20 @@
 from datetime import datetime, timedelta, timezone
 
-from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 
-from .celery_app import celery
+from .config import get_settings
+
+if get_settings().task_backend.casefold() == "local":
+    from .local_task import LocalTaskRegistry
+
+    celery = LocalTaskRegistry()
+
+    class SoftTimeLimitExceeded(Exception):
+        pass
+else:
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    from .celery_app import celery
 from .db import SessionLocal, create_schema
 from .models import AnalysisRun, CalendarEvent, Report
 from .services.agent import AgentService

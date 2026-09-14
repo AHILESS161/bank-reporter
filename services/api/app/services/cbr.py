@@ -48,21 +48,21 @@ BOOTSTRAP_BANKS = [
         "cbr_reg_number": "1481",
         "name": "ПАО Сбербанк",
         "short_name": "Сбер",
-        "official_url": "https://www.sberbank.com/ru/investor-relations",
+        "official_url": "https://www.sberbank.com/ru/investor-relations/reports-and-publications/ifrs",
         "aliases": ["сбербанк", "сбер"],
     },
     {
         "cbr_reg_number": "1000",
         "name": "Банк ВТБ (ПАО)",
         "short_name": "ВТБ",
-        "official_url": "https://www.vtb.ru/akcionery-i-investory/",
+        "official_url": "https://www.vtb.ru/ir/statements/results/",
         "aliases": ["втб"],
     },
     {
         "cbr_reg_number": "354",
         "name": "Банк ГПБ (АО)",
         "short_name": "Газпромбанк",
-        "official_url": "https://www.gazprombank.ru/about/disclosure/",
+        "official_url": "https://www.gazprombank.ru/investors/",
         "aliases": ["газпромбанк", "гпб"],
     },
     {
@@ -76,42 +76,42 @@ BOOTSTRAP_BANKS = [
         "cbr_reg_number": "3251",
         "name": "ПАО Банк ПСБ",
         "short_name": "ПСБ",
-        "official_url": "https://www.psbank.ru/Bank/Investor",
+        "official_url": "https://www.psbank.ru/bank/investors/ifrs",
         "aliases": ["псб", "промсвязьбанк"],
     },
     {
         "cbr_reg_number": "3349",
         "name": "АО Россельхозбанк",
         "short_name": "Россельхозбанк",
-        "official_url": "https://www.rshb.ru/about/investors/",
+        "official_url": "https://www.rshb.ru/about/reports-conclusion/msfo",
         "aliases": ["рсхб", "россельхозбанк"],
     },
     {
         "cbr_reg_number": "2673",
         "name": "АО ТБанк",
         "short_name": "Т-Банк",
-        "official_url": "https://www.tbank.ru/about/financial/",
+        "official_url": "https://www.tbank.ru/about/investors/11/",
         "aliases": ["т банк", "т-банк", "тинькофф"],
     },
     {
         "cbr_reg_number": "1978",
         "name": "ПАО МОСКОВСКИЙ КРЕДИТНЫЙ БАНК",
         "short_name": "МКБ",
-        "official_url": "https://ir.mkb.ru/investor-relations/reports",
+        "official_url": "https://ir.mkb.ru/investor-relations/reports/ifrs",
         "aliases": ["мкб", "московский кредитный банк"],
     },
     {
         "cbr_reg_number": "963",
         "name": "ПАО Совкомбанк",
         "short_name": "Совкомбанк",
-        "official_url": "https://sovcombank.ru/about/investors",
+        "official_url": "https://sovcombank.ru/about/finances",
         "aliases": ["совкомбанк"],
     },
     {
         "cbr_reg_number": "2312",
         "name": "АО Банк ДОМ.РФ",
         "short_name": "Банк ДОМ.РФ",
-        "official_url": "https://domrfbank.ru/investors/",
+        "official_url": "https://domrfbank.ru/about/information/msfo/",
         "aliases": ["дом рф", "банк дом.рф"],
     },
 ]
@@ -415,6 +415,122 @@ class CBRConnector:
         return events
 
 
+SNAPSHOT_LINK_RE = re.compile(
+    r'- link(?: "(?P<label>[^"]*)")? \[[^\]]*url=(?P<url>https?://[^\]]+)\]', re.IGNORECASE
+)
+
+
+def extract_page_links(page_url: str, content: str) -> list[tuple[str, str]]:
+    """Extract links from HTML or an agent-browser accessibility snapshot."""
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    soup = BeautifulSoup(content, "html.parser")
+    for node in soup.select("a[href], [data-href]"):
+        href = urljoin(page_url, node.get("href") or node.get("data-href") or "")
+        if not href.startswith(("http://", "https://")) or href in seen:
+            continue
+        seen.add(href)
+        found.append((node.get_text(" ", strip=True), href))
+    for match in SNAPSHOT_LINK_RE.finditer(content):
+        href = urljoin(page_url, match.group("url").strip())
+        if href in seen:
+            continue
+        seen.add(href)
+        found.append(((match.group("label") or "").strip(), href))
+    return found
+
+
+def _is_document_route(url: str) -> bool:
+    return bool(
+        re.search(r"\.(pdf|xlsx?|csv|zip|dbf)(?:$|[?#])", url, re.IGNORECASE)
+        or re.search(r"/file/[0-9a-f-]{20,}(?:$|[?#])", url, re.IGNORECASE)
+        or re.search(r"/api/v\d+/storage/[0-9a-f-]{20,}/attachment(?:$|[?#])", url, re.IGNORECASE)
+        or re.search(r"/document/\d+(?:$|[?#])", url, re.IGNORECASE)
+        or re.search(r"/download/\d+(?:/|$|[?#])", url, re.IGNORECASE)
+    )
+
+
+def _period_matches(text: str, period: str | None) -> bool:
+    if not period:
+        return True
+    year_match = re.search(r"20\d{2}", period)
+    if not year_match:
+        return period.casefold() in text
+    year = year_match.group(0)
+    explicit_years = set(re.findall(r"20\d{2}", text))
+    if explicit_years:
+        # Prefer an explicit reporting year in a label/filename. A compact
+        # suffix such as 010125 can be a 2025 publication date for a report
+        # whose title explicitly says 2024.
+        return year in explicit_years
+    short = year[-2:]
+    # Common IR filenames use 0325/0625/0925/1225 or q1_25 notation.
+    return bool(re.search(rf"(?:0[1-9]|1[0-2]|q[1-4]|[1-4]q|fy|h[12])[-_]?{short}(?:\D|$)", text))
+
+
+def _candidate_period_matches(candidate: str, page_url: str, period: str | None) -> bool:
+    if _period_matches(candidate, period):
+        return True
+    # Extensionless disclosure routes (notably MKB UUID links) can omit the
+    # year completely. Trust a year-specific official page only when the
+    # candidate itself has no conflicting full or compact period marker.
+    has_own_period = bool(
+        re.search(r"20\d{2}", candidate)
+        or re.search(r"(?:0[1-9]|1[0-2]|q[1-4]|[1-4]q|fy|h[12])[-_]?(?:2\d)(?:\D|$)", candidate)
+    )
+    return not has_own_period and _period_matches(page_url.casefold(), period)
+
+
+def _document_freshness(text: str, requested_year: int | None = None) -> tuple[int, int]:
+    years = [int(value) for value in re.findall(r"20\d{2}", text)]
+    # Publication dates often sit next to older reporting periods. All
+    # candidates have already passed the requested-period filter, so rank them
+    # within that reporting year instead of preferring the publication year.
+    year = requested_year or max(years, default=0)
+    if not year:
+        compact = re.findall(r"(?:0[1-9]|1[0-2]|q[1-4]|[1-4]q|fy|h[12])[-_]?(2\d)(?:\D|$)", text)
+        year = 2000 + max((int(value) for value in compact), default=0)
+    period_rank = 0
+    if re.search(r"(?:12\s*месяц|годов|annual|\bfy\b|31[-_. ]?dec|31[-_. ]?декабр|122\d)", text):
+        period_rank = 12
+    else:
+        month = re.search(r"(?:as[-_ ]of[-_ ]|^|\D)(0[1-9]|1[0-2])[-_]?(?:20)?2\d(?:\D|$)", text)
+        if month:
+            period_rank = int(month.group(1))
+        elif re.search(r"(?:9\s*месяц|q3|3q|iii\s*кварт)", text):
+            period_rank = 9
+        elif re.search(r"(?:6\s*месяц|полугод|q2|2q|ii\s*кварт|h1)", text):
+            period_rank = 6
+        elif re.search(r"(?:3\s*месяц|q1|1q|i\s*кварт)", text):
+            period_rank = 3
+    # Cover common English labels and Russian "2025 year" equivalents that do
+    # not contain the adjective used by the earlier annual-report matcher.
+    if re.search(r"(?:half[- ]year|first[- ]half)", text):
+        period_rank = 6
+    elif period_rank == 0 and re.search(
+        r"(?:annual|full[- ]year|year[- ]ended|20\d{2}\s*(?:year|\u0433\u043e\u0434))",
+        text,
+    ):
+        period_rank = 12
+    return year, period_rank
+
+
+def _document_quality(text: str, requested_kind: str) -> int:
+    score = 0
+    if any(value in text for value in ("отчетност", "financial statement", "consolidated", "консолидирован")):
+        score += 50
+    if any(value in text for value in ("финансовые результаты", "financial result", "ifrs report")):
+        score += 25
+    secondary = ("презентац", "presentation", "пресс-релиз", "press-release", "transcript", "расшифров", "databook", "supplement")
+    if any(value in text for value in secondary):
+        score -= 35
+    if any(value in text for value in ("политик", "privacy", "персональн")):
+        score -= 100
+    if "аудитор" in text and "аудитор" not in requested_kind:
+        score -= 15
+    return score
+
+
 def discover_document_links(
     page_url: str, html: str, kind: str | None = None, period: str | None = None
 ) -> list[dict]:
@@ -428,21 +544,74 @@ def discover_document_links(
         if any(value in kind_value for value in ("рсбу", "ras"))
         else tuple(value for value in re.findall(r"[\w-]+", kind_value) if len(value) > 2)
     )
-    period_match = re.search(r"20\d{2}", period or "")
-    period_token = period_match.group(0) if period_match else (period or "").casefold()
+    seen_urls: set[str] = set()
     for link in soup.select("a[href]"):
         href = urljoin(page_url, link.get("href", ""))
-        label = link.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-        combined = f"{label} {href} {page_url}".casefold()
-        is_file_route = bool(re.search(r"/file/[0-9a-f-]{20,}(?:$|[?#])", href, re.I))
-        if not is_file_route and not re.search(r"\.(pdf|xlsx?|csv|zip|dbf)(?:$|\?)", href, re.I):
+        own_label = link.get_text(" ", strip=True)
+        context_parts: list[str] = []
+        parent = link.parent
+        for _ in range(3):
+            if parent is None:
+                break
+            parent_text = parent.get_text(" ", strip=True)
+            if parent_text and len(parent_text) <= 1_500:
+                context_parts.append(parent_text)
+            parent = parent.parent
+        contextual_label = next(
+            (
+                value
+                for value in context_parts
+                if value.casefold() not in {"pdf", "скачать", "download"} and len(value) > 3
+            ),
+            "",
+        )
+        label = own_label or contextual_label or href.rsplit("/", 1)[-1]
+        combined = f"{label} {' '.join(context_parts)} {href} {page_url}".casefold()
+        if not _is_document_route(href):
             continue
         if kind_tokens and not any(token in combined for token in kind_tokens):
             continue
-        if period_token and period_token not in combined:
+        if not _candidate_period_matches(f"{label} {href}".casefold(), page_url, period):
             continue
         standard = (
             "ifrs" if "мсфо" in combined or "ifrs" in combined else "ras" if "рсбу" in combined else None
         )
-        results.append({"title": label[:600], "url": href, "reporting_standard": standard})
-    return results
+        if href not in seen_urls:
+            seen_urls.add(href)
+            results.append({"title": label[:600], "url": href, "reporting_standard": standard})
+
+    # Rendered accessibility snapshots preserve URLs but often omit the visible
+    # document label. Filenames and the current IR path still provide enough
+    # evidence for deterministic filtering.
+    for label, href in extract_page_links(page_url, html):
+        if href in seen_urls or not _is_document_route(href):
+            continue
+        fallback_label = href.rsplit("/", 1)[-1].split("?", 1)[0]
+        title = label or fallback_label
+        combined = f"{title} {href} {page_url}".casefold()
+        if kind_tokens and not any(token in combined for token in kind_tokens):
+            continue
+        if not _candidate_period_matches(f"{title} {href}".casefold(), page_url, period):
+            continue
+        standard = "ifrs" if "мсфо" in combined or "ifrs" in combined else "ras" if "рсбу" in combined else None
+        seen_urls.add(href)
+        results.append({"title": title[:600], "url": href, "reporting_standard": standard})
+
+    requested_kind = (kind or "").casefold()
+    requested_year_match = re.search(r"20\d{2}", period or "")
+    requested_year = int(requested_year_match.group(0)) if requested_year_match else None
+    results = [
+        item
+        for item in results
+        if _document_quality(f"{item['title']} {item['url']}".casefold(), requested_kind) > -80
+    ]
+    return sorted(
+        results,
+        key=lambda item: (
+            _document_freshness(
+                f"{item['title']} {item['url']}".casefold(), requested_year
+            ),
+            _document_quality(f"{item['title']} {item['url']}".casefold(), requested_kind),
+        ),
+        reverse=True,
+    )
