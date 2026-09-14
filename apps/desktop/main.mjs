@@ -137,6 +137,7 @@ async function startApplication() {
         ...common,
         ELECTRON_RUN_AS_NODE: "1",
         NODE_ENV: "production",
+        NODE_PATH: resource("web", "modules"),
         HOSTNAME: "127.0.0.1",
         PORT: String(WEB_PORT),
       },

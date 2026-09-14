@@ -3,6 +3,8 @@ name: Build macOS Desktop
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "fix/**"
     tags:
       - "desktop-v*"
 
