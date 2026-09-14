@@ -14,8 +14,11 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  hdiutil detach "$MOUNT_DIR" -quiet 2>/dev/null || true
-  rm -rf "$MOUNT_DIR" "$STATE_DIR"
+  # The mounted image is read-only. Never recursively remove its mount point:
+  # detach it first, then remove only the now-empty temporary directory.
+  hdiutil detach "$MOUNT_DIR" -force -quiet 2>/dev/null || true
+  rmdir "$MOUNT_DIR" 2>/dev/null || true
+  rm -rf "$STATE_DIR"
 }
 trap cleanup EXIT
 
