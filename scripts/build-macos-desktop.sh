@@ -141,6 +141,8 @@ cp -R services/browser/node_modules "$RUNTIME_DIR/browser/node_modules"
   cd "$RUNTIME_DIR/browser"
   PLAYWRIGHT_BROWSERS_PATH="$RUNTIME_DIR/browsers" ./node_modules/.bin/agent-browser install
 )
+tar -czf "$RUNTIME_DIR/browser/node-modules.tar.gz" -C "$RUNTIME_DIR/browser" node_modules
+rm -rf "$RUNTIME_DIR/browser/node_modules"
 cp -R third_party/lieflat-charts "$RUNTIME_DIR/lieflat-charts"
 
 echo "Building unsigned macOS DMG for Apple Silicon ($ARCH)"

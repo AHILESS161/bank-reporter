@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
-import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 const API_PORT = 53111;
@@ -76,12 +76,34 @@ function apiExecutable() {
   return resource("api", "bank-reporter-api", name);
 }
 
+function prepareBrowserModules(userData) {
+  const cacheDir = path.join(userData, "runtime", app.getVersion(), "browser");
+  const modulesDir = path.join(cacheDir, "node_modules");
+  const cli = path.join(modulesDir, "agent-browser", "bin", "agent-browser.js");
+  if (existsSync(cli)) return modulesDir;
+
+  rmSync(cacheDir, { recursive: true, force: true });
+  mkdirSync(cacheDir, { recursive: true });
+  const archive = resource("browser", "node-modules.tar.gz");
+  const extracted = spawnSync("/usr/bin/tar", ["-xzf", archive, "-C", cacheDir], {
+    encoding: "utf8",
+    timeout: 120000,
+  });
+  if (extracted.error || extracted.status !== 0 || !existsSync(cli)) {
+    throw new Error(
+      `browser: не удалось распаковать встроенные зависимости\n\n${extracted.error?.message ?? extracted.stderr ?? "agent-browser CLI отсутствует"}`,
+    );
+  }
+  return modulesDir;
+}
+
 async function startApplication() {
   const userData = app.getPath("userData");
   const dataDir = path.join(userData, "data");
   const logDir = path.join(userData, "logs");
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(logDir, { recursive: true });
+  const browserModules = prepareBrowserModules(userData);
 
   const common = { ...process.env, DATA_DIR: dataDir, LOG_LEVEL: "info" };
   const browser = startProcess(
@@ -94,6 +116,7 @@ async function startApplication() {
         ...common,
         ELECTRON_RUN_AS_NODE: "1",
         AGENT_BROWSER_NODE_PATH: process.execPath,
+        AGENT_BROWSER_MODULES_PATH: browserModules,
         AGENT_BROWSER_NO_WEBMCP: "1",
         AGENT_BROWSER_CONTENT_BOUNDARIES: "1",
         PLAYWRIGHT_BROWSERS_PATH: resource("browsers"),

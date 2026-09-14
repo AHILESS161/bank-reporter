@@ -11,8 +11,9 @@ const exec = promisify(execFile);
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "127.0.0.1";
 const dataDir = path.resolve(process.env.DATA_DIR ?? "/data");
-const binary = path.resolve("node_modules/.bin/agent-browser");
-const cli = path.resolve("node_modules/agent-browser/bin/agent-browser.js");
+const modulesDir = path.resolve(process.env.AGENT_BROWSER_MODULES_PATH ?? "node_modules");
+const binary = path.join(modulesDir, ".bin", "agent-browser");
+const cli = path.join(modulesDir, "agent-browser", "bin", "agent-browser.js");
 
 function json(res, status, value) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });

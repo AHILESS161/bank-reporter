@@ -29,6 +29,14 @@ fail_with_log() {
   exit 1
 }
 
+require_file() {
+  local file="$1"
+  if [[ ! -f "$file" ]]; then
+    echo "::error::Required packaged file is missing: $file"
+    exit 1
+  fi
+}
+
 wait_for_url() {
   local name="$1"
   local pid="$2"
@@ -53,14 +61,27 @@ RUNTIME="$RESOURCES/runtime"
 ELECTRON_NODE="$APP_DIR/Contents/MacOS/Bank Reporter"
 API_EXECUTABLE="$RUNTIME/api/bank-reporter-api/bank-reporter-api"
 
-test -x "$ELECTRON_NODE"
-test -x "$API_EXECUTABLE"
-test -f "$RUNTIME/web/server.js"
-test -f "$RUNTIME/web/modules/next/package.json"
-test -f "$RUNTIME/browser/server.mjs"
-test -d "$RUNTIME/browser/node_modules"
+test -x "$ELECTRON_NODE" || { echo "::error::Packaged Electron executable is missing"; exit 1; }
+test -x "$API_EXECUTABLE" || { echo "::error::Packaged API executable is missing"; exit 1; }
+require_file "$RUNTIME/web/server.js"
+require_file "$RUNTIME/web/modules/next/package.json"
+require_file "$RUNTIME/browser/server.mjs"
+require_file "$RUNTIME/browser/node-modules.tar.gz"
+
+BROWSER_CACHE="$STATE_DIR/browser-runtime"
+mkdir -p "$BROWSER_CACHE"
+/usr/bin/tar -xzf "$RUNTIME/browser/node-modules.tar.gz" -C "$BROWSER_CACHE"
+BROWSER_MODULES="$BROWSER_CACHE/node_modules"
+require_file "$BROWSER_MODULES/agent-browser/bin/agent-browser.js"
 
 COMMON_PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+env \
+  PATH="$COMMON_PATH" \
+  ELECTRON_RUN_AS_NODE=1 \
+  PLAYWRIGHT_BROWSERS_PATH="$RUNTIME/browsers" \
+  "$ELECTRON_NODE" "$BROWSER_MODULES/agent-browser/bin/agent-browser.js" --version \
+  >"$STATE_DIR/agent-browser-version.log" 2>&1 || fail_with_log "agent-browser CLI" "$STATE_DIR/agent-browser-version.log"
 
 (
   cd "$RUNTIME/browser"
@@ -68,6 +89,7 @@ COMMON_PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     PATH="$COMMON_PATH" \
     ELECTRON_RUN_AS_NODE=1 \
     AGENT_BROWSER_NODE_PATH="$ELECTRON_NODE" \
+    AGENT_BROWSER_MODULES_PATH="$BROWSER_MODULES" \
     AGENT_BROWSER_NO_WEBMCP=1 \
     AGENT_BROWSER_CONTENT_BOUNDARIES=1 \
     PLAYWRIGHT_BROWSERS_PATH="$RUNTIME/browsers" \
