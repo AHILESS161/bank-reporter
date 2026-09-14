@@ -1,5 +1,17 @@
 #!/bin/bash
-set -euo pipefail
+set -Eeuo pipefail
+
+report_build_error() {
+  local status="$1"
+  local line="$2"
+  local command="$3"
+  command="${command//%/%25}"
+  command="${command//:/%3A}"
+  echo "::error title=Desktop build failed::line $line, exit $status, command $command"
+  exit "$status"
+}
+
+trap 'report_build_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_DIR="$PROJECT_DIR/apps/desktop/.runtime"
